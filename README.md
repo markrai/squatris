@@ -1,6 +1,6 @@
 # Squatris
 
-Squatris is a Windows-first motion-controlled falling-block game. This repository currently contains Phase 0A: a game-independent native pose foundation and the Squatris Pose Lab diagnostic application. It does not contain gameplay, gesture recognition, Godot integration, networking, or cloud inference.
+Squatris is a Windows-first motion-controlled falling-block game. This repository currently contains Phase 0A.1: a hardened game-independent native pose foundation and the Squatris Pose Lab diagnostic application. It does not contain gameplay, gesture recognition, player identity tracking, Godot integration, networking, or cloud inference.
 
 The production path is C++20, OpenCV camera capture, RTMPose through ONNX Runtime, and an explicit CUDA execution provider. CPU inference, synthetic capture, prerecorded capture, and a deterministic mock estimator are available for development and hardware-independent testing.
 
@@ -10,10 +10,11 @@ The production path is C++20, OpenCV camera capture, RTMPose through ONNX Runtim
 - COCO-17 and HALPE-26 anatomical mapping with left/right identity preservation.
 - OpenCV Media Foundation, prerecorded, and synthetic frame sources.
 - A bounded latest-frame handoff that drops stale work instead of building a backlog.
+- Frame-synchronized diagnostics, explicit pose freshness, and fail-closed tracking validity.
 - Strict ONNX Runtime CPU or CUDA provider selection.
 - YOLOX-tiny person detection and RTMPose-m HALPE-26 inference.
 - Pose Lab camera/skeleton/diagnostic visualization and keyboard controls.
-- Reproducible JSON benchmarking with warm-up separation and latency percentiles.
+- Deterministic sequential and paced real-time JSON benchmarks with source/frame evidence, deadlines, report validation, warm-up separation, and latency percentiles.
 - Deterministic GoogleTest coverage and Windows CI.
 
 ## Quick start on Windows
@@ -39,7 +40,7 @@ Acquire verified model files and configure CPU or CUDA inference:
 ```powershell
 .\scripts\acquire-models.ps1
 .\scripts\acquire-onnxruntime.ps1 -Variant gpu
-$env:SQUATRIS_ONNXRUNTIME_ROOT=(Resolve-Path '.\.deps\onnxruntime')
+$env:SQUATRIS_ONNXRUNTIME_ROOT=(Resolve-Path '.\.deps\onnxruntime\gpu')
 cmake --preset windows-cuda-release
 cmake --build --preset windows-cuda-release
 .\out\build\windows-cuda-release\apps\pose-lab\SquatrisPoseLab.exe --camera 0 --backend rtmpose --provider cuda
@@ -47,7 +48,7 @@ cmake --build --preset windows-cuda-release
 
 CUDA mode fails explicitly if `CUDAExecutionProvider` cannot be registered. Select `--provider cpu` deliberately when CPU behavior is desired.
 
-See [BUILDING.md](docs/BUILDING.md), [ARCHITECTURE.md](docs/ARCHITECTURE.md), and [QUALIFICATION.md](docs/QUALIFICATION.md) before running on qualification hardware.
+Use `.deps\onnxruntime\gpu` for the GPU package or `.deps\onnxruntime\cpu` for the CPU package. See [BUILDING.md](docs/BUILDING.md), [ARCHITECTURE.md](docs/ARCHITECTURE.md), and [QUALIFICATION.md](docs/QUALIFICATION.md) before running on qualification hardware.
 
 ## Pose Lab controls
 
@@ -55,10 +56,10 @@ See [BUILDING.md](docs/BUILDING.md), [ARCHITECTURE.md](docs/ARCHITECTURE.md), an
 - `S`: toggle skeleton and landmark confidence overlay.
 - `D`: toggle diagnostics.
 - `M`: mirror only the preview presentation.
+- `F`: switch between frame-synchronized diagnostics and low-latency preview.
 
-Mirroring never changes canonical anatomical left/right identity.
+Mirroring never changes canonical anatomical left/right identity. Low-latency mode suppresses skeletons when preview and pose sequences differ.
 
 ## Repository scope
 
 Model weights, captured video, benchmark results, local dependencies, generated files, and build output are ignored by Git. No project license has been selected.
-

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <memory>
+#include <stdexcept>
 #include <thread>
 
 namespace squatris::backends::camera {
@@ -12,16 +13,47 @@ SyntheticSource::SyntheticSource(SyntheticSourceConfig config) : config_(config)
 SyntheticSource::~SyntheticSource() { stop(); }
 
 Status SyntheticSource::start() {
-  if (started_.exchange(true)) {
-    return {ErrorCode::initialization_failed, "Synthetic source is already started"};
-  }
   if (config_.width == 0 || config_.height == 0 || !std::isfinite(config_.fps) ||
       config_.fps <= 0.0) {
-    started_ = false;
     return {ErrorCode::invalid_argument, "Synthetic source configuration is invalid"};
   }
-  worker_ = std::jthread([this](const std::stop_token& stop_token) { run(stop_token); });
+  if (start_attempted_.exchange(true)) {
+    return {ErrorCode::initialization_failed, "Synthetic source instances are single-use"};
+  }
+  started_ = true;
+  try {
+    worker_ = std::jthread([this](const std::stop_token& stop_token) { run_safely(stop_token); });
+  } catch (const std::exception& exception) {
+    started_ = false;
+    start_attempted_ = false;
+    return {ErrorCode::initialization_failed,
+            "Synthetic worker could not start: " + std::string(exception.what())};
+  } catch (...) {
+    started_ = false;
+    start_attempted_ = false;
+    return {ErrorCode::initialization_failed, "Synthetic worker could not start"};
+  }
   return Status::success();
+}
+
+void SyntheticSource::run_safely(const std::stop_token& stop_token) noexcept {
+  try {
+    run(stop_token);
+  } catch (const std::exception& exception) {
+    {
+      std::lock_guard lock(error_mutex_);
+      terminal_error_ =
+          Status{ErrorCode::io_error, "Synthetic worker failed: " + std::string(exception.what())};
+    }
+    frames_.close();
+  } catch (...) {
+    {
+      std::lock_guard lock(error_mutex_);
+      terminal_error_ =
+          Status{ErrorCode::io_error, "Synthetic worker failed with an unknown error"};
+    }
+    frames_.close();
+  }
 }
 
 void SyntheticSource::stop() noexcept {
@@ -60,6 +92,9 @@ void SyntheticSource::run(const std::stop_token& stop_token) {
   std::uint64_t rate_frames{};
   std::uint64_t sequence{};
   while (!stop_token.stop_requested()) {
+    if (config_.throw_after_frames && sequence >= *config_.throw_after_frames) {
+      throw std::runtime_error("Synthetic worker exception requested");
+    }
     if (config_.fail_after_frames && sequence >= *config_.fail_after_frames) {
       {
         std::lock_guard lock(error_mutex_);
@@ -71,6 +106,9 @@ void SyntheticSource::run(const std::stop_token& stop_token) {
     const auto acquisition_started = pose::Clock::now();
     auto frame = std::make_shared<input::Frame>();
     frame->sequence = ++sequence;
+    frame->source_frame_index = sequence - 1;
+    frame->source_media_timestamp = std::chrono::microseconds(
+        static_cast<std::int64_t>(static_cast<double>(sequence - 1) * 1'000'000.0 / config_.fps));
     frame->width = config_.width;
     frame->height = config_.height;
     frame->stride = config_.width * 3;

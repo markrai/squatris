@@ -25,6 +25,7 @@ struct InferenceResult {
   InferenceTimings timings;
   std::string backend;
   std::string execution_provider;
+  bool person_detected{};
 };
 
 class IPoseEstimator {

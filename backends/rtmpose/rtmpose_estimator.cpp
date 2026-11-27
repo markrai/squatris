@@ -21,9 +21,6 @@
 #include "squatris/core/pose/mapping.hpp"
 
 #if SQUATRIS_HAS_ONNXRUNTIME
-#if SQUATRIS_ORT_HAS_CUDA
-#include <cuda_provider_factory.h>
-#endif
 #include <onnxruntime_cxx_api.h>
 #endif
 
@@ -51,6 +48,71 @@ struct ModelNames {
   std::vector<Ort::AllocatedStringPtr> storage;
   std::vector<const char*> values;
 };
+
+void require_contract(bool condition, const std::string& message) {
+  if (!condition) {
+    throw std::runtime_error("ONNX model contract mismatch: " + message);
+  }
+}
+
+void validate_tensor_metadata(const Ort::Session& session, bool input, std::size_t index,
+                              ONNXTensorElementDataType expected_type,
+                              std::span<const std::int64_t> expected_shape,
+                              std::string_view tensor_name) {
+  const auto type_info = input ? session.GetInputTypeInfo(index) : session.GetOutputTypeInfo(index);
+  require_contract(type_info.GetONNXType() == ONNX_TYPE_TENSOR,
+                   std::string(tensor_name) + " is not a tensor");
+  const auto tensor_info = type_info.GetTensorTypeAndShapeInfo();
+  require_contract(tensor_info.GetElementType() == expected_type,
+                   std::string(tensor_name) + " element type is incorrect");
+  const auto shape = tensor_info.GetShape();
+  require_contract(shape.size() == expected_shape.size(),
+                   std::string(tensor_name) + " rank is incorrect");
+  for (std::size_t dimension = 0; dimension < shape.size(); ++dimension) {
+    if (expected_shape[dimension] != 0) {
+      require_contract(shape[dimension] == expected_shape[dimension],
+                       std::string(tensor_name) + " dimension " + std::to_string(dimension) +
+                           " is " + std::to_string(shape[dimension]) + ", expected " +
+                           std::to_string(expected_shape[dimension]));
+    }
+  }
+}
+
+void validate_model_contracts(const Ort::Session& detector, const ModelNames& detector_inputs,
+                              const ModelNames& detector_outputs, const Ort::Session& pose,
+                              const ModelNames& pose_inputs, const ModelNames& pose_outputs) {
+  require_contract(detector_inputs.values.size() == 1 &&
+                       std::string_view(detector_inputs.values[0]) == "input",
+                   "detector input name must be input");
+  require_contract(detector_outputs.values.size() == 2 &&
+                       std::string_view(detector_outputs.values[0]) == "dets" &&
+                       std::string_view(detector_outputs.values[1]) == "labels",
+                   "detector outputs must be dets and labels");
+  require_contract(pose_inputs.values.size() == 1 &&
+                       std::string_view(pose_inputs.values[0]) == "input",
+                   "pose input name must be input");
+  require_contract(pose_outputs.values.size() == 2 &&
+                       std::string_view(pose_outputs.values[0]) == "simcc_x" &&
+                       std::string_view(pose_outputs.values[1]) == "simcc_y",
+                   "pose outputs must be simcc_x and simcc_y");
+  constexpr std::array<std::int64_t, 4> detector_input_shape{1, 3, detector_height, detector_width};
+  constexpr std::array<std::int64_t, 3> detector_output_shape{1, 0, 5};
+  constexpr std::array<std::int64_t, 2> detector_label_shape{1, 0};
+  constexpr std::array<std::int64_t, 4> pose_input_shape{0, 3, pose_height, pose_width};
+  constexpr std::array<std::int64_t, 3> dynamic_pose_output_shape{0, 0, 0};
+  validate_tensor_metadata(detector, true, 0, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT,
+                           detector_input_shape, "detector input");
+  validate_tensor_metadata(detector, false, 0, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT,
+                           detector_output_shape, "detector dets");
+  validate_tensor_metadata(detector, false, 1, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64,
+                           detector_label_shape, "detector labels");
+  validate_tensor_metadata(pose, true, 0, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, pose_input_shape,
+                           "pose input");
+  validate_tensor_metadata(pose, false, 0, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT,
+                           dynamic_pose_output_shape, "pose simcc_x");
+  validate_tensor_metadata(pose, false, 1, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT,
+                           dynamic_pose_output_shape, "pose simcc_y");
+}
 
 ModelNames input_names(const Ort::Session& session, Ort::AllocatorWithDefaultOptions& allocator) {
   ModelNames names;
@@ -89,12 +151,9 @@ Ort::SessionOptions session_options(ExecutionProvider provider, int device_id) {
   if (provider == ExecutionProvider::cuda) {
     options.AddConfigEntry("session.disable_cpu_ep_fallback", "1");
 #if SQUATRIS_ORT_HAS_CUDA
-    const auto status = OrtSessionOptionsAppendExecutionProvider_CUDA(options, device_id);
-    if (status != nullptr) {
-      const auto message = std::string(Ort::GetApi().GetErrorMessage(status));
-      Ort::GetApi().ReleaseStatus(status);
-      throw std::runtime_error("CUDA execution provider initialization failed: " + message);
-    }
+    OrtCUDAProviderOptions cuda_options;
+    cuda_options.device_id = device_id;
+    options.AppendExecutionProvider_CUDA(cuda_options);
 #else
     static_cast<void>(device_id);
     throw std::runtime_error("The selected ONNX Runtime package does not contain CUDA support");
@@ -124,20 +183,15 @@ std::vector<float> bgr_to_nchw(const cv::Mat& image) {
 }
 
 std::vector<float> normalized_rgb_to_nchw(const cv::Mat& bgr_image) {
-  constexpr std::array mean{123.675F, 116.28F, 103.53F};
-  constexpr std::array standard_deviation{58.395F, 57.12F, 57.375F};
-  cv::Mat rgb_image;
-  cv::cvtColor(bgr_image, rgb_image, cv::COLOR_BGR2RGB);
-  std::vector<float> tensor(static_cast<std::size_t>(rgb_image.rows) * rgb_image.cols * 3);
-  const auto plane = static_cast<std::size_t>(rgb_image.rows) * rgb_image.cols;
-  for (int y = 0; y < rgb_image.rows; ++y) {
-    const auto* row = rgb_image.ptr<cv::Vec3b>(y);
-    for (int x = 0; x < rgb_image.cols; ++x) {
-      const auto offset = static_cast<std::size_t>(y) * rgb_image.cols + x;
-      for (std::size_t channel = 0; channel < 3; ++channel) {
-        tensor[channel * plane + offset] =
-            (static_cast<float>(row[x][static_cast<int>(channel)]) - mean[channel]) /
-            standard_deviation[channel];
+  std::vector<float> tensor(static_cast<std::size_t>(bgr_image.rows) * bgr_image.cols * 3);
+  const auto plane = static_cast<std::size_t>(bgr_image.rows) * bgr_image.cols;
+  for (int y = 0; y < bgr_image.rows; ++y) {
+    const auto* row = bgr_image.ptr<cv::Vec3b>(y);
+    for (int x = 0; x < bgr_image.cols; ++x) {
+      const auto offset = static_cast<std::size_t>(y) * bgr_image.cols + x;
+      const auto normalized = normalize_pose_pixel({row[x][0], row[x][1], row[x][2]});
+      for (std::size_t channel = 0; channel < normalized.size(); ++channel) {
+        tensor[channel * plane + offset] = normalized[channel];
       }
     }
   }
@@ -182,7 +236,10 @@ struct RtmposeEstimator::Impl {
              session_options(config.provider, config.cuda_device_id)),
         detector_inputs(input_names(detector, allocator)),
         detector_outputs(output_names(detector, allocator)),
-        pose_inputs(input_names(pose, allocator)), pose_outputs(output_names(pose, allocator)) {}
+        pose_inputs(input_names(pose, allocator)), pose_outputs(output_names(pose, allocator)) {
+    validate_model_contracts(detector, detector_inputs, detector_outputs, pose, pose_inputs,
+                             pose_outputs);
+  }
 
   RtmposeConfig config;
   Ort::Env environment;
@@ -280,23 +337,30 @@ Result<squatris::inference::InferenceResult> RtmposeEstimator::infer(const input
       return Status{ErrorCode::inference_failed, "Detector outputs do not match the manifest"};
     }
     const auto detection_info = detector_outputs[0].GetTensorTypeAndShapeInfo();
-    const auto detection_count = detection_info.GetElementCount() / 5;
-    const auto* detections = detector_outputs[0].GetTensorData<float>();
-    const auto label_type = detector_outputs[1].GetTensorTypeAndShapeInfo().GetElementType();
-    const auto* labels64 = label_type == ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64
-                               ? detector_outputs[1].GetTensorData<std::int64_t>()
-                               : nullptr;
-    const auto* labels32 = label_type == ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32
-                               ? detector_outputs[1].GetTensorData<std::int32_t>()
-                               : nullptr;
-    if (labels64 == nullptr && labels32 == nullptr) {
-      return Status{ErrorCode::inference_failed, "Detector label tensor has an unsupported type"};
+    const auto detection_shape = detection_info.GetShape();
+    const auto label_info = detector_outputs[1].GetTensorTypeAndShapeInfo();
+    const auto label_shape = label_info.GetShape();
+    if (detection_info.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ||
+        detection_shape.size() != 3 || detection_shape[0] != 1 || detection_shape[1] < 0 ||
+        detection_shape[2] != 5 ||
+        label_info.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64 ||
+        label_shape.size() != 2 || label_shape[0] != 1 || label_shape[1] != detection_shape[1]) {
+      return Status{ErrorCode::inference_failed, "Detector tensor shapes or types are invalid"};
     }
+    const auto detection_count = static_cast<std::size_t>(detection_shape[1]);
+    if (detection_info.GetElementCount() != detection_count * 5 ||
+        label_info.GetElementCount() != detection_count) {
+      return Status{ErrorCode::inference_failed, "Detector tensor element counts are invalid"};
+    }
+    const auto* detections = detector_outputs[0].GetTensorData<float>();
+    const auto* labels = detector_outputs[1].GetTensorData<std::int64_t>();
     std::optional<BoundingBox> selected;
     for (std::size_t index = 0; index < detection_count; ++index) {
-      const auto label = labels64 != nullptr ? labels64[index] : labels32[index];
+      const auto label = labels[index];
       const auto* detection = detections + index * 5;
-      if (label != 0 || !std::isfinite(detection[4]) ||
+      if (label != 0 ||
+          !std::ranges::all_of(std::span(detection, 5),
+                               [](float value) { return std::isfinite(value); }) ||
           detection[4] < implementation_->config.detection_threshold) {
         continue;
       }
@@ -316,6 +380,7 @@ Result<squatris::inference::InferenceResult> RtmposeEstimator::infer(const input
           std::chrono::duration_cast<std::chrono::microseconds>(pose::Clock::now() - started);
       return result;
     }
+    result.person_detected = true;
 
     const auto preprocessing_started = pose::Clock::now();
     cv::Point2f center;
@@ -341,8 +406,15 @@ Result<squatris::inference::InferenceResult> RtmposeEstimator::infer(const input
     }
     const auto x_shape = pose_outputs[0].GetTensorTypeAndShapeInfo().GetShape();
     const auto y_shape = pose_outputs[1].GetTensorTypeAndShapeInfo().GetShape();
-    if (x_shape.size() != 3 || y_shape.size() != 3 || x_shape[1] != halpe_keypoints ||
-        y_shape[1] != halpe_keypoints || x_shape[2] <= 0 || y_shape[2] <= 0) {
+    const auto x_info = pose_outputs[0].GetTensorTypeAndShapeInfo();
+    const auto y_info = pose_outputs[1].GetTensorTypeAndShapeInfo();
+    if (x_info.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ||
+        y_info.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT || x_shape.size() != 3 ||
+        y_shape.size() != 3 || x_shape[0] != 1 || y_shape[0] != 1 ||
+        x_shape[1] != halpe_keypoints || y_shape[1] != halpe_keypoints ||
+        x_shape[2] != pose_width * 2 || y_shape[2] != pose_height * 2 ||
+        x_info.GetElementCount() != halpe_keypoints * pose_width * 2 ||
+        y_info.GetElementCount() != halpe_keypoints * pose_height * 2) {
       return Status{ErrorCode::inference_failed, "Pose output shapes do not match HALPE-26 SimCC"};
     }
     const auto* simcc_x = pose_outputs[0].GetTensorData<float>();
@@ -379,9 +451,14 @@ Result<squatris::inference::InferenceResult> RtmposeEstimator::infer(const input
         ++confidence_count;
       }
     }
-    if (confidence_count > 0) {
-      pose_frame.pose_confidence = confidence_sum / static_cast<float>(confidence_count);
+    if (confidence_count == 0) {
+      result.timings.pose_postprocessing = std::chrono::duration_cast<std::chrono::microseconds>(
+          pose::Clock::now() - postprocessing_started);
+      result.timings.end_to_end =
+          std::chrono::duration_cast<std::chrono::microseconds>(pose::Clock::now() - started);
+      return result;
     }
+    pose_frame.pose_confidence = confidence_sum / static_cast<float>(confidence_count);
     const auto validation = pose::validate_pose(pose_frame);
     if (!validation.ok()) {
       return validation;

@@ -1,6 +1,6 @@
 # Building
 
-## Supported Phase 0A host
+## Supported Phase 0A.1 host
 
 The intended host is Windows 11 x64 with MSVC and the Windows SDK. CMake 3.28 or newer and Ninja are required. Visual Studio's bundled CMake and Ninja are sufficient when their directories are added to `PATH`, or when commands are invoked by absolute path. Run configure and build commands inside an x64 Visual Studio developer shell so MSVC's standard-library and SDK paths are available.
 
@@ -30,14 +30,15 @@ ctest --preset windows-release
 
 ```powershell
 .\scripts\acquire-onnxruntime.ps1 -Variant cpu
-$env:SQUATRIS_ONNXRUNTIME_ROOT=(Resolve-Path '.\.deps\onnxruntime')
-cmake --preset windows-cuda-release -DSQUATRIS_ENABLE_ONNXRUNTIME=ON
-cmake --build --preset windows-cuda-release
+$env:SQUATRIS_ONNXRUNTIME_ROOT=(Resolve-Path '.\.deps\onnxruntime\cpu')
+cmake --preset windows-onnx-release
+cmake --build --preset windows-onnx-release
+ctest --preset windows-onnx-release
 ```
 
 Use `--provider cpu` at runtime.
 
-The preset name reflects the production CUDA configuration, but the selected NuGet package determines whether that build contains CPU-only or CPU/CUDA providers.
+CPU and GPU packages install into isolated variant directories and cannot overwrite one another.
 
 ## ONNX Runtime CUDA build
 
@@ -45,7 +46,7 @@ ONNX Runtime 1.20.1 GPU is pinned because its official compatibility matrix supp
 
 ```powershell
 .\scripts\acquire-onnxruntime.ps1 -Variant gpu
-$env:SQUATRIS_ONNXRUNTIME_ROOT=(Resolve-Path '.\.deps\onnxruntime')
+$env:SQUATRIS_ONNXRUNTIME_ROOT=(Resolve-Path '.\.deps\onnxruntime\gpu')
 cmake --preset windows-cuda-release
 cmake --build --preset windows-cuda-release
 ```
@@ -60,7 +61,7 @@ The GPU NuGet package is pinned by SHA-512. All native DLLs are copied beside bu
 .\out\build\windows-cuda-release\apps\pose-lab\SquatrisPoseLab.exe --camera 0 --width 1920 --height 1080 --fps 60 --backend rtmpose --provider cuda --detector models\detector.onnx --pose models\pose.onnx
 ```
 
-Camera requests are preferences. Pose Lab reports the actual width, height, backend, encoding, configured capture rate, and measured delivery rate.
+Camera requests are preferences. Pose Lab reports the actual width, height, backend, encoding, configured capture rate, and measured delivery rate. Frame-synchronized diagnostics are the default. `--freshness-ms` controls pose and capture freshness, while `--max-inference-failures` bounds persistent failures.
 
 ## Static analysis and formatting
 
@@ -72,4 +73,4 @@ cmake --build --preset windows-release
 
 The checked-in Clang-Tidy profile treats analyzer, bug-prone, concurrency, performance, and portability findings in project code as errors. Style-only transformations are handled by Clang-Format instead.
 
-Hardware-dependent inference and camera checks are intentionally not part of normal CI.
+CPU ONNX-enabled compilation and hardware-independent tests run in CI without model files. CUDA and camera checks remain opt-in and are driven by `scripts/qualify-titan.ps1` on the target machine.

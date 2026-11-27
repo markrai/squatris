@@ -17,6 +17,7 @@ struct SyntheticSourceConfig {
   std::uint32_t height{480};
   double fps{60.0};
   std::optional<std::uint64_t> fail_after_frames;
+  std::optional<std::uint64_t> throw_after_frames;
 };
 
 class SyntheticSource final : public input::IFrameSource {
@@ -33,12 +34,14 @@ public:
   [[nodiscard]] std::optional<Status> terminal_error() const override;
 
 private:
+  void run_safely(const std::stop_token& stop_token) noexcept;
   void run(const std::stop_token& stop_token);
 
   SyntheticSourceConfig config_;
   input::LatestFrameBuffer frames_;
   std::jthread worker_;
   std::atomic<bool> started_{};
+  std::atomic<bool> start_attempted_{};
   std::atomic<std::uint64_t> delivered_{};
   std::atomic<double> measured_fps_{};
   mutable std::mutex error_mutex_;

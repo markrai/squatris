@@ -1,6 +1,7 @@
 add_library(squatris_backends STATIC
   camera/opencv_camera_source.cpp
   camera/prerecorded_source.cpp
+  camera/sequential_frame_source.cpp
   camera/synthetic_source.cpp
   inference/mock_pose_estimator.cpp
   rtmpose/model_math.cpp

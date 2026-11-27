@@ -1,6 +1,8 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
+#include <cstdint>
 #include <span>
 #include <vector>
 
@@ -22,6 +24,9 @@ struct PoseRegion {
   float width{};
   float height{};
 };
+
+[[nodiscard]] std::array<float, 3>
+normalize_pose_pixel(std::array<std::uint8_t, 3> bgr_pixel) noexcept;
 
 [[nodiscard]] Result<PoseRegion> prepare_pose_region(PersonBox box, float padding = 1.25F);
 

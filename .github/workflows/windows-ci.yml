@@ -31,3 +31,21 @@ jobs:
       - name: Build with clang-tidy
         shell: pwsh
         run: cmake --build --preset windows-release
+
+  onnx-cpu-build-test:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: 9fa95bf687fa6ae7f2da0673a8067e5fc1515c27
+      - name: Acquire pinned ONNX Runtime CPU package
+        shell: pwsh
+        run: |
+          ./scripts/acquire-onnxruntime.ps1 -Variant cpu
+          "SQUATRIS_ONNXRUNTIME_ROOT=$PWD\.deps\onnxruntime\cpu" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - uses: lukka/run-cmake@v10
+        with:
+          configurePreset: windows-onnx-release
+          buildPreset: windows-onnx-release
+          testPreset: windows-onnx-release

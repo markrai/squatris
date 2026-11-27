@@ -5,6 +5,7 @@ add_executable(squatris-tests
   unit/pose_tests.cpp
   unit/geometry_tests.cpp
   unit/latest_frame_buffer_tests.cpp
+  unit/tracking_assessment_tests.cpp
   unit/rtmpose_math_tests.cpp
   integration/pipeline_tests.cpp
 )
@@ -18,11 +19,45 @@ set_target_properties(squatris-tests PROPERTIES FOLDER "Squatris/Tests")
 squatris_stage_onnxruntime(squatris-tests)
 gtest_discover_tests(squatris-tests)
 
-add_test(NAME squatris-benchmark-smoke
-  COMMAND squatris-pose-benchmark --backend mock --warmup 2 --iterations 5
-          --output ${CMAKE_CURRENT_BINARY_DIR}/benchmark-smoke.json
+add_test(NAME squatris-benchmark-deterministic-smoke
+  COMMAND squatris-pose-benchmark --mode deterministic --backend mock --warmup 2 --iterations 5
+          --output ${CMAKE_CURRENT_BINARY_DIR}/benchmark-deterministic-smoke.json
 )
-set_tests_properties(squatris-benchmark-smoke PROPERTIES LABELS "integration;hardware-independent")
+add_test(NAME squatris-benchmark-deterministic-report-validation
+  COMMAND squatris-pose-benchmark --validate-report
+          ${CMAKE_CURRENT_BINARY_DIR}/benchmark-deterministic-smoke.json
+)
+add_test(NAME squatris-benchmark-realtime-smoke
+  COMMAND squatris-pose-benchmark --mode realtime --backend mock --warmup 2 --iterations 5
+          --output ${CMAKE_CURRENT_BINARY_DIR}/benchmark-realtime-smoke.json
+)
+add_test(NAME squatris-benchmark-realtime-report-validation
+  COMMAND squatris-pose-benchmark --validate-report
+          ${CMAKE_CURRENT_BINARY_DIR}/benchmark-realtime-smoke.json
+)
+add_test(NAME squatris-benchmark-rejects-unknown-provider
+  COMMAND squatris-pose-benchmark --mode deterministic --backend mock --provider unknown
+)
+set_tests_properties(squatris-benchmark-deterministic-smoke PROPERTIES
+  LABELS "integration;hardware-independent"
+  FIXTURES_SETUP deterministic_benchmark_report
+)
+set_tests_properties(squatris-benchmark-deterministic-report-validation PROPERTIES
+  LABELS "integration;hardware-independent"
+  FIXTURES_REQUIRED deterministic_benchmark_report
+)
+set_tests_properties(squatris-benchmark-realtime-smoke PROPERTIES
+  LABELS "integration;hardware-independent"
+  FIXTURES_SETUP realtime_benchmark_report
+)
+set_tests_properties(squatris-benchmark-realtime-report-validation PROPERTIES
+  LABELS "integration;hardware-independent"
+  FIXTURES_REQUIRED realtime_benchmark_report
+)
+set_tests_properties(squatris-benchmark-rejects-unknown-provider PROPERTIES
+  LABELS "integration;hardware-independent"
+  WILL_FAIL TRUE
+)
 
 if(SQUATRIS_ENABLE_HARDWARE_TESTS)
   if(NOT SQUATRIS_ENABLE_ONNXRUNTIME)
@@ -43,10 +78,12 @@ if(SQUATRIS_ENABLE_HARDWARE_TESTS)
     COMMAND squatris-pose-benchmark
       --backend rtmpose
       --provider ${SQUATRIS_HARDWARE_PROVIDER}
+      --mode deterministic
       --warmup 2
       --iterations 5
       --detector ${PROJECT_SOURCE_DIR}/models/detector.onnx
       --pose ${PROJECT_SOURCE_DIR}/models/pose.onnx
+      --manifest ${PROJECT_SOURCE_DIR}/models/manifest.json
       --output ${CMAKE_CURRENT_BINARY_DIR}/hardware-provider-smoke.json
   )
   add_test(NAME squatris-hardware-prerecorded-qualification
@@ -54,10 +91,12 @@ if(SQUATRIS_ENABLE_HARDWARE_TESTS)
       --video ${SQUATRIS_HARDWARE_VIDEO}
       --backend rtmpose
       --provider ${SQUATRIS_HARDWARE_PROVIDER}
+      --mode deterministic
       --warmup 100
       --iterations 2000
       --detector ${PROJECT_SOURCE_DIR}/models/detector.onnx
       --pose ${PROJECT_SOURCE_DIR}/models/pose.onnx
+      --manifest ${PROJECT_SOURCE_DIR}/models/manifest.json
       --output ${CMAKE_CURRENT_BINARY_DIR}/hardware-prerecorded-qualification.json
   )
   set_tests_properties(

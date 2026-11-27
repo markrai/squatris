@@ -10,7 +10,7 @@ This is an experimental baseline, not a permanent model decision. Phase 0B will 
 
 ## Reproducible artifacts
 
-`models/manifest.json` records source URLs, upstream versions, input/output contracts, SHA-256 checksums, licensing notes, and redistribution status. `scripts/acquire-models.ps1` downloads archives into a chosen local model directory, verifies archive and extracted ONNX checksums, and retains only `detector.onnx` and `pose.onnx`.
+`models/manifest.json` is the single authoritative artifact definition. It records source URLs, filenames, upstream versions, input/output contracts, SHA-256 checksums, licensing notes, and redistribution status. `scripts/acquire-models.ps1` consumes that manifest, reuses already verified files, verifies archives and extracted ONNX files, and retains only the named model outputs.
 
 Weights are excluded from Git. Redistribution has not been approved.
 
@@ -22,7 +22,9 @@ The person box is padded by 1.25 and adjusted to the 192:256 pose aspect ratio. 
 
 RTMPose returns x and y SimCC distributions for 26 keypoints. Each axis maximum is decoded with split ratio 2.0, mapped through the crop center/scale into source pixels, normalized, and mapped from HALPE-26 to canonical anatomy. Invalid and below-threshold landmarks become unavailable.
 
-The implementation follows the export metadata embedded in the official OpenMMLab archives and was cross-checked against rtmlib revision `5ea82df885d6f2a66923f1de2d15c799af0ed732` for center/scale, affine, normalization, and SimCC behavior.
+Session initialization requires the pinned input and output names, tensor ranks, and element types. The export declares RTMPose output axes dynamically, so each inference additionally requires runtime shapes `[1,26,384]` and `[1,26,512]` and exact element counts before tensor memory is read. Detector outputs must be float32 `[1,N,5]` detections and int64 `[1,N]` labels with matching `N`.
+
+The implementation follows `deploy.json`, `detail.json`, and `pipeline.json` embedded in the pinned official OpenMMLab archives and was cross-checked against rtmlib revision `5ea82df885d6f2a66923f1de2d15c799af0ed732` for center/scale, affine, RGB normalization, SimCC decoding, mean confidence, and inverse coordinate transformation. Deterministic fixtures cover region aspect, RGB channel order and normalization, argmax/mean confidence, inverse coordinates, malformed shapes, and non-finite values.
 
 ## Limitations
 
@@ -31,4 +33,3 @@ The implementation follows the export metadata embedded in the official OpenMMLa
 - Estimated depth is absent for this 2D model.
 - Physical accuracy, occlusion behavior, and camera-distance limits remain unqualified.
 - Training dataset terms require legal review before distributing model weights.
-

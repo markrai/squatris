@@ -39,19 +39,32 @@
       }
     },
     {
+      "name": "windows-onnx-release",
+      "inherits": "base",
+      "displayName": "Windows Release (ONNX Runtime CPU)",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "SQUATRIS_ENABLE_ONNXRUNTIME": "ON",
+        "SQUATRIS_ONNXRUNTIME_ROOT": "$env{SQUATRIS_ONNXRUNTIME_ROOT}",
+        "SQUATRIS_WARNINGS_AS_ERRORS": "ON"
+      }
+    },
+    {
       "name": "windows-cuda-release",
       "inherits": "base",
       "displayName": "Windows Release (ONNX Runtime CPU/CUDA)",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "SQUATRIS_ENABLE_ONNXRUNTIME": "ON",
-        "SQUATRIS_ONNXRUNTIME_ROOT": "$env{SQUATRIS_ONNXRUNTIME_ROOT}"
+        "SQUATRIS_ONNXRUNTIME_ROOT": "$env{SQUATRIS_ONNXRUNTIME_ROOT}",
+        "SQUATRIS_WARNINGS_AS_ERRORS": "ON"
       }
     }
   ],
   "buildPresets": [
     {"name": "windows-debug", "configurePreset": "windows-debug"},
     {"name": "windows-release", "configurePreset": "windows-release"},
+    {"name": "windows-onnx-release", "configurePreset": "windows-onnx-release"},
     {"name": "windows-cuda-release", "configurePreset": "windows-cuda-release"}
   ],
   "testPresets": [
@@ -63,6 +76,11 @@
     {
       "name": "windows-release",
       "configurePreset": "windows-release",
+      "output": {"outputOnFailure": true}
+    },
+    {
+      "name": "windows-onnx-release",
+      "configurePreset": "windows-onnx-release",
       "output": {"outputOnFailure": true}
     },
     {

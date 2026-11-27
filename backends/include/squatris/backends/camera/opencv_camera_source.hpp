@@ -42,12 +42,14 @@ public:
   [[nodiscard]] std::optional<Status> terminal_error() const override;
 
 private:
+  void run_safely(const std::stop_token& stop_token) noexcept;
   void run(const std::stop_token& stop_token);
 
   CameraConfig config_;
   input::LatestFrameBuffer frames_;
   std::jthread worker_;
   std::atomic<bool> started_{};
+  std::atomic<bool> start_attempted_{};
   std::atomic<std::uint64_t> delivered_{};
   std::atomic<double> measured_fps_{};
   mutable std::mutex state_mutex_;

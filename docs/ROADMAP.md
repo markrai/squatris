@@ -1,6 +1,7 @@
 # Roadmap
 
 - Phase 0A: Native foundation and initial Pose Lab.
+- Phase 0A.1: Foundation hardening, deterministic evidence, and TITAN qualification preparation.
 - Phase 0B: Comparative pose-model evaluation.
 - Phase 0C: Recorded-session infrastructure and physical pose qualification.
 - Phase 1A: Player calibration and temporal pose filtering.
@@ -19,5 +20,4 @@
 
 Future gestures will use temporal state machines, player calibration, hysteresis, confidence gating, and explicit rearming. Tracking loss will fail closed. Qualification will report intentional recall and unintended activations separately.
 
-Phase 0B must not start until Phase 0A is reviewed and the initial pipeline is exercised on TITAN.
-
+Phase 0B must not start until Phase 0A.1 is reviewed and the hardened pipeline is qualified on TITAN. A ready-for-review status on VENOM does not satisfy the TITAN gate.

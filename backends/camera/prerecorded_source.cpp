@@ -1,9 +1,11 @@
 #include "squatris/backends/camera/prerecorded_source.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <memory>
 #include <opencv2/core.hpp>
 #include <opencv2/videoio.hpp>
+#include <stdexcept>
 #include <thread>
 
 namespace squatris::backends::camera {
@@ -13,15 +15,48 @@ PrerecordedSource::PrerecordedSource(PrerecordedSourceConfig config) : config_(s
 PrerecordedSource::~PrerecordedSource() { stop(); }
 
 Status PrerecordedSource::start() {
-  if (started_.exchange(true)) {
-    return {ErrorCode::initialization_failed, "Prerecorded source is already started"};
-  }
-  if (config_.path.empty() || !std::filesystem::is_regular_file(config_.path)) {
-    started_ = false;
+  std::error_code filesystem_error;
+  if (config_.path.empty() || !std::filesystem::is_regular_file(config_.path, filesystem_error) ||
+      filesystem_error) {
     return {ErrorCode::not_found, "Prerecorded video does not exist"};
   }
-  worker_ = std::jthread([this](const std::stop_token& stop_token) { run(stop_token); });
+  if (start_attempted_.exchange(true)) {
+    return {ErrorCode::initialization_failed, "Prerecorded source instances are single-use"};
+  }
+  started_ = true;
+  try {
+    worker_ = std::jthread([this](const std::stop_token& stop_token) { run_safely(stop_token); });
+  } catch (const std::exception& exception) {
+    started_ = false;
+    start_attempted_ = false;
+    return {ErrorCode::initialization_failed,
+            "Prerecorded worker could not start: " + std::string(exception.what())};
+  } catch (...) {
+    started_ = false;
+    start_attempted_ = false;
+    return {ErrorCode::initialization_failed, "Prerecorded worker could not start"};
+  }
   return Status::success();
+}
+
+void PrerecordedSource::run_safely(const std::stop_token& stop_token) noexcept {
+  try {
+    run(stop_token);
+  } catch (const std::exception& exception) {
+    {
+      std::lock_guard lock(state_mutex_);
+      terminal_error_ = Status{ErrorCode::io_error,
+                               "Prerecorded worker failed: " + std::string(exception.what())};
+    }
+    frames_.close();
+  } catch (...) {
+    {
+      std::lock_guard lock(state_mutex_);
+      terminal_error_ =
+          Status{ErrorCode::io_error, "Prerecorded worker failed with an unknown error"};
+    }
+    frames_.close();
+  }
 }
 
 void PrerecordedSource::stop() noexcept {
@@ -96,6 +131,15 @@ void PrerecordedSource::run(const std::stop_token& stop_token) {
     }
     auto frame = std::make_shared<input::Frame>();
     frame->sequence = ++sequence;
+    const auto source_position = capture.get(cv::CAP_PROP_POS_FRAMES);
+    if (std::isfinite(source_position) && source_position >= 1.0) {
+      frame->source_frame_index = static_cast<std::uint64_t>(source_position - 1.0);
+    }
+    const auto source_timestamp_ms = capture.get(cv::CAP_PROP_POS_MSEC);
+    if (std::isfinite(source_timestamp_ms) && source_timestamp_ms >= 0.0) {
+      frame->source_media_timestamp =
+          std::chrono::microseconds(static_cast<std::int64_t>(source_timestamp_ms * 1000.0));
+    }
     frame->width = static_cast<std::uint32_t>(image.cols);
     frame->height = static_cast<std::uint32_t>(image.rows);
     frame->stride = frame->width * 3;

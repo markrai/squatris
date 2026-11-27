@@ -8,7 +8,7 @@ namespace squatris::pose {
 
 [[nodiscard]] std::optional<float> joint_angle_degrees(const Landmark& first,
                                                        const Landmark& vertex,
-                                                       const Landmark& third,
+                                                       const Landmark& third, ImageSize image_size,
                                                        float minimum_confidence);
 
 }

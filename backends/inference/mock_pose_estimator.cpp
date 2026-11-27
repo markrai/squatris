@@ -39,6 +39,7 @@ Result<squatris::inference::InferenceResult> MockPoseEstimator::infer(const inpu
   result.pose = std::move(output);
   result.backend = backend_name();
   result.execution_provider = execution_provider();
+  result.person_detected = true;
   result.timings.frame_acquisition = frame.acquisition_duration;
   result.timings.frame_age_at_start =
       std::chrono::duration_cast<std::chrono::microseconds>(started - frame.captured_at);

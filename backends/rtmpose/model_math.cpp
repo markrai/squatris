@@ -3,8 +3,17 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <ranges>
 
 namespace squatris::backends::rtmpose {
+
+std::array<float, 3> normalize_pose_pixel(std::array<std::uint8_t, 3> bgr_pixel) noexcept {
+  constexpr std::array mean{123.675F, 116.28F, 103.53F};
+  constexpr std::array standard_deviation{58.395F, 57.12F, 57.375F};
+  return {(static_cast<float>(bgr_pixel[2]) - mean[0]) / standard_deviation[0],
+          (static_cast<float>(bgr_pixel[1]) - mean[1]) / standard_deviation[1],
+          (static_cast<float>(bgr_pixel[0]) - mean[2]) / standard_deviation[2]};
+}
 
 Result<PoseRegion> prepare_pose_region(PersonBox box, float padding) {
   if (!std::isfinite(box.left) || !std::isfinite(box.top) || !std::isfinite(box.right) ||
@@ -30,14 +39,19 @@ Result<std::vector<pose::ModelLandmark>> decode_simcc(std::span<const float> sim
                                                       PoseRegion region, float split_ratio) {
   if (keypoint_count == 0 || x_bins == 0 || y_bins == 0 ||
       simcc_x.size() != keypoint_count * x_bins || simcc_y.size() != keypoint_count * y_bins ||
-      !std::isfinite(split_ratio) || split_ratio <= 0.0F || region.width <= 0.0F ||
-      region.height <= 0.0F) {
+      !std::isfinite(split_ratio) || split_ratio <= 0.0F || !std::isfinite(region.center_x) ||
+      !std::isfinite(region.center_y) || !std::isfinite(region.width) ||
+      !std::isfinite(region.height) || region.width <= 0.0F || region.height <= 0.0F) {
     return Status{ErrorCode::invalid_data, "SimCC tensors or pose region are invalid"};
   }
   std::vector<pose::ModelLandmark> decoded(keypoint_count);
   for (std::size_t keypoint = 0; keypoint < keypoint_count; ++keypoint) {
     const auto x_values = simcc_x.subspan(keypoint * x_bins, x_bins);
     const auto y_values = simcc_y.subspan(keypoint * y_bins, y_bins);
+    if (!std::ranges::all_of(x_values, [](float value) { return std::isfinite(value); }) ||
+        !std::ranges::all_of(y_values, [](float value) { return std::isfinite(value); })) {
+      return Status{ErrorCode::invalid_data, "SimCC tensors contain non-finite values"};
+    }
     const auto x_max = std::max_element(x_values.begin(), x_values.end());
     const auto y_max = std::max_element(y_values.begin(), y_values.end());
     if (!std::isfinite(*x_max) || !std::isfinite(*y_max)) {

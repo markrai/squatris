@@ -10,6 +10,7 @@
 #include <opencv2/videoio.hpp>
 #include <ranges>
 #include <sstream>
+#include <stdexcept>
 
 namespace squatris::backends::camera {
 
@@ -63,51 +64,88 @@ OpenCvCameraSource::OpenCvCameraSource(CameraConfig config) : config_(config) {}
 OpenCvCameraSource::~OpenCvCameraSource() { stop(); }
 
 Result<std::vector<CameraDevice>> OpenCvCameraSource::enumerate(bool probe_formats) {
-  constexpr std::array probes{std::array{1920.0, 1080.0, 60.0}, std::array{1920.0, 1080.0, 30.0},
-                              std::array{1280.0, 720.0, 60.0},  std::array{1280.0, 720.0, 30.0},
-                              std::array{640.0, 480.0, 60.0},   std::array{640.0, 480.0, 30.0}};
-  std::vector<CameraDevice> devices;
-  for (int index = 0; index < 10; ++index) {
-    cv::VideoCapture capture(index, capture_backend());
-    if (!capture.isOpened()) {
-      continue;
-    }
-    CameraDevice device{index, "camera-" + std::to_string(index), {}};
-    if (probe_formats) {
-      for (const auto& probe : probes) {
-        request_format(capture, static_cast<std::uint32_t>(probe[0]),
-                       static_cast<std::uint32_t>(probe[1]), probe[2]);
-        cv::Mat sample;
-        if (!capture.read(sample) || sample.empty()) {
-          continue;
-        }
-        auto actual = read_format(capture, probe[2]);
-        const auto duplicate =
-            std::ranges::any_of(device.accepted_probe_formats, [&actual](const auto& existing) {
-              return existing.width == actual.width && existing.height == actual.height &&
-                     std::abs(existing.negotiated_fps - actual.negotiated_fps) < 0.1;
-            });
-        if (!duplicate) {
-          device.accepted_probe_formats.push_back(std::move(actual));
+  try {
+    constexpr std::array probes{std::array{1920.0, 1080.0, 60.0}, std::array{1920.0, 1080.0, 30.0},
+                                std::array{1280.0, 720.0, 60.0},  std::array{1280.0, 720.0, 30.0},
+                                std::array{640.0, 480.0, 60.0},   std::array{640.0, 480.0, 30.0}};
+    std::vector<CameraDevice> devices;
+    for (int index = 0; index < 10; ++index) {
+      cv::VideoCapture capture(index, capture_backend());
+      if (!capture.isOpened()) {
+        continue;
+      }
+      CameraDevice device{index, "camera-" + std::to_string(index), {}};
+      if (probe_formats) {
+        for (const auto& probe : probes) {
+          request_format(capture, static_cast<std::uint32_t>(probe[0]),
+                         static_cast<std::uint32_t>(probe[1]), probe[2]);
+          cv::Mat sample;
+          if (!capture.read(sample) || sample.empty()) {
+            continue;
+          }
+          auto actual = read_format(capture, probe[2]);
+          const auto duplicate =
+              std::ranges::any_of(device.accepted_probe_formats, [&actual](const auto& existing) {
+                return existing.width == actual.width && existing.height == actual.height &&
+                       std::abs(existing.negotiated_fps - actual.negotiated_fps) < 0.1;
+              });
+          if (!duplicate) {
+            device.accepted_probe_formats.push_back(std::move(actual));
+          }
         }
       }
+      devices.push_back(std::move(device));
     }
-    devices.push_back(std::move(device));
+    return devices;
+  } catch (const std::exception& exception) {
+    return Status{ErrorCode::io_error,
+                  "Camera enumeration failed: " + std::string(exception.what())};
+  } catch (...) {
+    return Status{ErrorCode::io_error, "Camera enumeration failed with an unknown error"};
   }
-  return devices;
 }
 
 Status OpenCvCameraSource::start() {
-  if (started_.exchange(true)) {
-    return {ErrorCode::initialization_failed, "Camera source is already started"};
-  }
   if (config_.device_index < 0 || config_.width == 0 || config_.height == 0 ||
       !std::isfinite(config_.fps) || config_.fps <= 0.0) {
-    started_ = false;
     return {ErrorCode::invalid_argument, "Camera configuration is invalid"};
   }
-  worker_ = std::jthread([this](const std::stop_token& stop_token) { run(stop_token); });
+  if (start_attempted_.exchange(true)) {
+    return {ErrorCode::initialization_failed, "Camera source instances are single-use"};
+  }
+  started_ = true;
+  try {
+    worker_ = std::jthread([this](const std::stop_token& stop_token) { run_safely(stop_token); });
+  } catch (const std::exception& exception) {
+    started_ = false;
+    start_attempted_ = false;
+    return {ErrorCode::initialization_failed,
+            "Camera worker could not start: " + std::string(exception.what())};
+  } catch (...) {
+    started_ = false;
+    start_attempted_ = false;
+    return {ErrorCode::initialization_failed, "Camera worker could not start"};
+  }
   return Status::success();
+}
+
+void OpenCvCameraSource::run_safely(const std::stop_token& stop_token) noexcept {
+  try {
+    run(stop_token);
+  } catch (const std::exception& exception) {
+    {
+      std::lock_guard lock(state_mutex_);
+      terminal_error_ =
+          Status{ErrorCode::io_error, "Camera worker failed: " + std::string(exception.what())};
+    }
+    frames_.close();
+  } catch (...) {
+    {
+      std::lock_guard lock(state_mutex_);
+      terminal_error_ = Status{ErrorCode::io_error, "Camera worker failed with an unknown error"};
+    }
+    frames_.close();
+  }
 }
 
 void OpenCvCameraSource::stop() noexcept {
@@ -180,6 +218,7 @@ void OpenCvCameraSource::run(const std::stop_token& stop_token) {
     }
     auto frame = std::make_shared<input::Frame>();
     frame->sequence = ++sequence;
+    frame->source_frame_index = sequence - 1;
     frame->width = static_cast<std::uint32_t>(image.cols);
     frame->height = static_cast<std::uint32_t>(image.rows);
     frame->stride = frame->width * 3;

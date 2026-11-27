@@ -1,4 +1,5 @@
 #include <array>
+#include <limits>
 
 #include <gtest/gtest.h>
 
@@ -20,6 +21,13 @@ TEST(RtmposePreprocessing, RejectsDegeneratePersonBox) {
   EXPECT_FALSE(squatris::backends::rtmpose::prepare_pose_region({1.0F, 2.0F, 1.0F, 5.0F}));
 }
 
+TEST(RtmposePreprocessing, MatchesPinnedRgbNormalizationFixture) {
+  const auto normalized = squatris::backends::rtmpose::normalize_pose_pixel({10, 20, 30});
+  EXPECT_NEAR(normalized[0], (30.0F - 123.675F) / 58.395F, 0.000001F);
+  EXPECT_NEAR(normalized[1], (20.0F - 116.28F) / 57.12F, 0.000001F);
+  EXPECT_NEAR(normalized[2], (10.0F - 103.53F) / 57.375F, 0.000001F);
+}
+
 TEST(RtmposeDecoding, MatchesUpstreamArgmaxMeanScoreFixture) {
   constexpr std::array x{0.1F, 0.2F, 0.9F, 0.3F};
   constexpr std::array y{0.2F, 0.1F, 0.3F, 0.4F, 0.1F, 0.8F, 0.2F, 0.1F};
@@ -37,6 +45,13 @@ TEST(RtmposeDecoding, RejectsMismatchedTensorShape) {
   constexpr std::array y{0.1F, 0.2F};
   EXPECT_FALSE(
       squatris::backends::rtmpose::decode_simcc(x, y, 2, 2, 2, {96.0F, 128.0F, 192.0F, 256.0F}));
+}
+
+TEST(RtmposeDecoding, RejectsNonFiniteTensorValues) {
+  constexpr std::array x{0.1F, 0.2F};
+  const std::array y{0.1F, std::numeric_limits<float>::quiet_NaN()};
+  EXPECT_FALSE(
+      squatris::backends::rtmpose::decode_simcc(x, y, 1, 2, 2, {96.0F, 128.0F, 192.0F, 256.0F}));
 }
 
 }

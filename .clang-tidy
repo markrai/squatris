@@ -17,5 +17,4 @@ WarningsAsErrors: '*'
 HeaderFilterRegex: '^(core|backends|apps|tools|tests)[/\\]'
 FormatStyle: file
 ExtraArgs:
-  - '-fexceptions'
-  - '-fcxx-exceptions'
+  - '/EHsc'

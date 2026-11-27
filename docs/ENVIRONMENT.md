@@ -22,7 +22,7 @@ The inspected machine is a temporary implementation PC, not TITAN.
 | Python | 3.13.7; not used as a production runtime |
 | Package managers | WinGet 1.29.380; no global vcpkg, Chocolatey, or Scoop |
 | Godot | Not installed; not required in Phase 0A |
-| ONNX Runtime | No preinstalled native or Python runtime found |
+| ONNX Runtime | No preinstalled native or Python runtime found; the CPU package was later acquired into the repository-local `.deps/onnxruntime/cpu` directory |
 | Camera devices | Integrated Camera present; Logitech VID_046D/PID_0990 reported with unknown device status |
 | Camera formats | Media Foundation probe delivered camera 0 at 1280x720/30 FPS and 640x480/30 FPS in BGR8 buffers |
 
@@ -30,6 +30,6 @@ TITAN's Ryzen 9 7900X, RTX 4080 SUPER, NVIDIA driver, CUDA/cuDNN, and physical c
 
 ## Temporary-PC smoke evidence
 
-The official MMPose PoseTrack sample opened through FFmpeg at 1280x720/30 FPS. The pinned YOLOX and RTMPose models completed one warm-up and three measured end-to-end iterations through ONNX Runtime `CPUExecutionProvider`; all measured frames contained a pose and model hashes matched the manifest. Median estimator latency was 320.089 ms and measured throughput was 3.163 FPS. Three samples are smoke evidence only, not a performance qualification.
+The official MMPose PoseTrack sample opened through FFmpeg at 1280x720/30 FPS. The pinned YOLOX and RTMPose models completed one warm-up and two measured end-to-end iterations through ONNX Runtime `CPUExecutionProvider`; all measured frames contained a usable pose, model hashes matched the manifest, and the schema-2 report passed the built-in validator. Median end-to-end latency was 317.570 ms and measured throughput was 3.130 FPS. Two samples are smoke evidence only, not a performance qualification; this temporary PC is not the performance target.
 
 An explicit CUDA request against the CPU runtime failed during initialization with `Requested ONNX Runtime provider is unavailable: CUDAExecutionProvider` and exit code 1. No CPU fallback occurred.

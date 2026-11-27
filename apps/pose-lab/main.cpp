@@ -4,6 +4,8 @@
 #include <charconv>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
+#include <exception>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
@@ -25,6 +27,7 @@
 #include "squatris/backends/camera/synthetic_source.hpp"
 #include "squatris/backends/inference/mock_pose_estimator.hpp"
 #include "squatris/backends/rtmpose/rtmpose_estimator.hpp"
+#include "squatris/core/inference/tracking_assessment.hpp"
 #include "squatris/core/metrics/latency_statistics.hpp"
 #include "squatris/core/pose/geometry.hpp"
 
@@ -48,14 +51,19 @@ struct Options {
   std::string provider{"cuda"};
   std::filesystem::path detector{"models/detector.onnx"};
   std::filesystem::path pose{"models/pose.onnx"};
+  std::uint32_t freshness_ms{250};
+  std::size_t maximum_consecutive_failures{3};
 };
 
 struct SharedState {
   std::mutex mutex;
   std::optional<InferenceResult> latest;
+  std::shared_ptr<const squatris::input::Frame> inferred_frame;
   std::optional<Status> error;
+  std::optional<Status> terminal_error;
   std::uint64_t processed{};
   std::uint64_t skipped{};
+  std::uint64_t consecutive_failures{};
   double inference_fps{};
 };
 
@@ -101,6 +109,12 @@ std::optional<Options> parse_options(int argc, char** argv) {
         if (argument == "--fps") {
           return parse_number(*value, options.fps);
         }
+        if (argument == "--freshness-ms") {
+          return parse_number(*value, options.freshness_ms);
+        }
+        if (argument == "--max-inference-failures") {
+          return parse_number(*value, options.maximum_consecutive_failures);
+        }
         return true;
       }();
       if (!numeric_valid) {
@@ -118,11 +132,16 @@ std::optional<Options> parse_options(int argc, char** argv) {
       } else if (argument == "--pose") {
         options.pose = *value;
       } else if (argument != "--camera" && argument != "--width" && argument != "--height" &&
-                 argument != "--fps") {
+                 argument != "--fps" && argument != "--freshness-ms" &&
+                 argument != "--max-inference-failures") {
         std::cerr << "Unknown argument: " << argument << '\n';
         return std::nullopt;
       }
     }
+  }
+  if (options.freshness_ms == 0 || options.maximum_consecutive_failures == 0) {
+    std::cerr << "Freshness and maximum inference failures must be nonzero\n";
+    return std::nullopt;
   }
   return options;
 }
@@ -134,7 +153,8 @@ void print_help() {
             << "  --video PATH | --synthetic\n"
             << "  --backend rtmpose|mock --provider cuda|cpu\n"
             << "  --detector PATH --pose PATH\n"
-            << "Keys: Q/Esc exit, S skeleton, D diagnostics, M mirror preview\n";
+            << "  --freshness-ms N --max-inference-failures N\n"
+            << "Keys: Q/Esc exit, S skeleton, D diagnostics, M mirror preview, F sync mode\n";
 }
 
 std::unique_ptr<squatris::input::IFrameSource> make_source(const Options& options) {
@@ -251,7 +271,9 @@ std::string angle_text(std::optional<float> angle) {
 void draw_diagnostics(cv::Mat& image, const squatris::input::CaptureFormat& format,
                       const squatris::input::SourceStatistics& source_statistics,
                       const SharedState& state, const std::optional<InferenceResult>& inference,
-                      const std::optional<Status>& error, bool mirror) {
+                      const std::optional<Status>& error,
+                      const squatris::inference::TrackingAssessment& tracking,
+                      std::uint64_t displayed_sequence, bool mirror, bool synchronized) {
   std::vector<std::string> lines;
   std::ostringstream format_line;
   format_line << format.width << 'x' << format.height << " requested " << format.requested_fps
@@ -262,9 +284,18 @@ void draw_diagnostics(cv::Mat& image, const squatris::input::CaptureFormat& form
   rates << std::fixed << std::setprecision(1) << "capture " << source_statistics.delivered_fps
         << " FPS  inference " << state.inference_fps << " FPS";
   lines.push_back(rates.str());
-  lines.push_back("preview mirror: " + std::string(mirror ? "on" : "off") +
+  lines.push_back("preview: " + std::string(synchronized ? "frame-synchronized" : "low-latency") +
+                  "  mirror: " + std::string(mirror ? "on" : "off") +
                   "  skipped: " + std::to_string(state.skipped) +
                   "  overwritten: " + std::to_string(source_statistics.frames_overwritten));
+  std::ostringstream tracking_line;
+  tracking_line << "tracking: " << squatris::inference::to_string(tracking.state)
+                << "  reason: " << squatris::inference::to_string(tracking.reason)
+                << "  preview seq: " << displayed_sequence
+                << "  pose seq: " << tracking.pose_sequence << "  age: " << std::fixed
+                << std::setprecision(1) << static_cast<double>(tracking.pose_age.count()) / 1000.0
+                << " ms  " << (tracking.sequence_matches ? "matched" : "mismatched");
+  lines.push_back(tracking_line.str());
   if (inference) {
     lines.push_back("backend: " + inference->backend +
                     "  provider: " + inference->execution_provider);
@@ -281,16 +312,14 @@ void draw_diagnostics(cv::Mat& image, const squatris::input::CaptureFormat& form
     lines.push_back(timing.str());
     if (inference->pose) {
       const auto& pose = *inference->pose;
-      const auto left = squatris::pose::joint_angle_degrees(pose.at(LandmarkId::left_hip),
-                                                            pose.at(LandmarkId::left_knee),
-                                                            pose.at(LandmarkId::left_ankle), 0.5F);
+      const auto left = squatris::pose::joint_angle_degrees(
+          pose.at(LandmarkId::left_hip), pose.at(LandmarkId::left_knee),
+          pose.at(LandmarkId::left_ankle), pose.image_size, 0.5F);
       const auto right = squatris::pose::joint_angle_degrees(
           pose.at(LandmarkId::right_hip), pose.at(LandmarkId::right_knee),
-          pose.at(LandmarkId::right_ankle), 0.5F);
-      lines.push_back("tracking: valid  left knee: " + angle_text(left) +
-                      "  right knee: " + angle_text(right));
-    } else {
-      lines.push_back("tracking: no person");
+          pose.at(LandmarkId::right_ankle), pose.image_size, 0.5F);
+      lines.push_back("projected 2D knee angles  left: " + angle_text(left) +
+                      "  right: " + angle_text(right));
     }
   }
   if (error) {
@@ -309,7 +338,8 @@ void draw_diagnostics(cv::Mat& image, const squatris::input::CaptureFormat& form
 }
 
 void inference_loop(const std::stop_token& stop_token, squatris::input::IFrameSource& source,
-                    squatris::inference::IPoseEstimator& estimator, SharedState& state) {
+                    squatris::inference::IPoseEstimator& estimator, SharedState& state,
+                    std::size_t maximum_consecutive_failures) {
   std::uint64_t sequence{};
   auto rate_started = squatris::pose::Clock::now();
   std::uint64_t rate_count{};
@@ -323,7 +353,9 @@ void inference_loop(const std::stop_token& stop_token, squatris::input::IFrameSo
         return;
       }
       std::lock_guard lock(state.mutex);
-      state.error = frame.error();
+      state.latest.reset();
+      state.inferred_frame.reset();
+      state.terminal_error = frame.error();
       return;
     }
     if (sequence != 0 && frame.value()->sequence > sequence + 1) {
@@ -334,7 +366,15 @@ void inference_loop(const std::stop_token& stop_token, squatris::input::IFrameSo
     auto inference = estimator.infer(*frame.value());
     if (!inference) {
       std::lock_guard lock(state.mutex);
+      state.latest.reset();
+      state.inferred_frame.reset();
       state.error = inference.error();
+      ++state.consecutive_failures;
+      if (state.consecutive_failures >= maximum_consecutive_failures) {
+        state.terminal_error = Status{ErrorCode::inference_failed,
+                                      "Inference failed repeatedly: " + inference.error().message};
+        return;
+      }
       continue;
     }
     ++rate_count;
@@ -342,6 +382,9 @@ void inference_loop(const std::stop_token& stop_token, squatris::input::IFrameSo
     const auto seconds = std::chrono::duration<double>(now - rate_started).count();
     std::lock_guard lock(state.mutex);
     state.latest = inference.take_value();
+    state.inferred_frame = frame.value();
+    state.error.reset();
+    state.consecutive_failures = 0;
     ++state.processed;
     if (seconds >= 1.0) {
       state.inference_fps = static_cast<double>(rate_count) / seconds;
@@ -373,7 +416,7 @@ int list_cameras() {
 
 }
 
-int main(int argc, char** argv) {
+int run_pose_lab(int argc, char** argv) {
   const auto options = parse_options(argc, argv);
   if (!options) {
     print_help();
@@ -399,45 +442,41 @@ int main(int argc, char** argv) {
   }
   SharedState state;
   std::jthread inference_worker([&](const std::stop_token& stop_token) {
-    inference_loop(stop_token, *source, *estimator.value(), state);
+    try {
+      inference_loop(stop_token, *source, *estimator.value(), state,
+                     options->maximum_consecutive_failures);
+    } catch (const std::exception& exception) {
+      std::lock_guard lock(state.mutex);
+      state.latest.reset();
+      state.inferred_frame.reset();
+      state.terminal_error = Status{ErrorCode::inference_failed,
+                                    "Inference worker failed: " + std::string(exception.what())};
+    } catch (...) {
+      std::lock_guard lock(state.mutex);
+      state.latest.reset();
+      state.inferred_frame.reset();
+      state.terminal_error =
+          Status{ErrorCode::inference_failed, "Inference worker failed with an unknown error"};
+    }
   });
   bool skeleton = true;
   bool diagnostics = true;
   bool mirror = true;
-  std::uint64_t display_sequence{};
+  bool synchronized = true;
+  bool terminal_failure{};
+  std::uint64_t capture_sequence{};
+  std::shared_ptr<const squatris::input::Frame> current_frame;
+  std::optional<squatris::pose::TimePoint> last_capture_observed_at;
+  const squatris::inference::TrackingPolicy tracking_policy{
+      std::chrono::milliseconds(options->freshness_ms),
+      std::chrono::milliseconds(options->freshness_ms), 0.5F, 3};
   cv::namedWindow("Squatris Pose Lab", cv::WINDOW_NORMAL);
   while (true) {
-    auto frame = source->wait_for_frame(display_sequence, std::chrono::milliseconds(20));
+    auto frame = source->wait_for_frame(capture_sequence, std::chrono::milliseconds(20));
     if (frame) {
-      display_sequence = frame.value()->sequence;
-      cv::Mat wrapped(
-          static_cast<int>(frame.value()->height), static_cast<int>(frame.value()->width), CV_8UC3,
-          const_cast<std::uint8_t*>(frame.value()->pixels.data()), frame.value()->stride);
-      cv::Mat display;
-      if (mirror) {
-        cv::flip(wrapped, display, 1);
-      } else {
-        display = wrapped.clone();
-      }
-      std::optional<InferenceResult> latest;
-      std::optional<Status> error;
-      SharedState snapshot;
-      {
-        std::lock_guard lock(state.mutex);
-        latest = state.latest;
-        error = state.error;
-        snapshot.processed = state.processed;
-        snapshot.skipped = state.skipped;
-        snapshot.inference_fps = state.inference_fps;
-      }
-      if (skeleton && latest && latest->pose) {
-        draw_pose(display, *latest->pose, mirror);
-      }
-      if (diagnostics) {
-        draw_diagnostics(display, source->format(), source->statistics(), snapshot, latest, error,
-                         mirror);
-      }
-      cv::imshow("Squatris Pose Lab", display);
+      capture_sequence = frame.value()->sequence;
+      current_frame = frame.value();
+      last_capture_observed_at = squatris::pose::Clock::now();
     } else if (frame.error().code != ErrorCode::timeout) {
       const auto terminal = source->terminal_error();
       if (terminal) {
@@ -445,6 +484,57 @@ int main(int argc, char** argv) {
       } else if (frame.error().code != ErrorCode::stopped) {
         std::cerr << "Capture failed: " << frame.error().message << '\n';
       }
+      terminal_failure = true;
+      break;
+    }
+
+    std::optional<InferenceResult> latest;
+    std::shared_ptr<const squatris::input::Frame> inferred_frame;
+    std::optional<Status> error;
+    std::optional<Status> inference_terminal;
+    SharedState snapshot;
+    {
+      std::lock_guard lock(state.mutex);
+      latest = state.latest;
+      inferred_frame = state.inferred_frame;
+      error = state.error;
+      inference_terminal = state.terminal_error;
+      snapshot.processed = state.processed;
+      snapshot.skipped = state.skipped;
+      snapshot.consecutive_failures = state.consecutive_failures;
+      snapshot.inference_fps = state.inference_fps;
+    }
+    const auto display_frame = synchronized && inferred_frame ? inferred_frame : current_frame;
+    if (display_frame) {
+      const auto now = squatris::pose::Clock::now();
+      const auto source_error = source->terminal_error();
+      const auto tracking = squatris::inference::assess_tracking(
+          {latest ? &*latest : nullptr, error ? &*error : nullptr, last_capture_observed_at,
+           source_error, display_frame->sequence, now},
+          tracking_policy);
+      cv::Mat wrapped(
+          static_cast<int>(display_frame->height), static_cast<int>(display_frame->width), CV_8UC3,
+          const_cast<std::uint8_t*>(display_frame->pixels.data()), display_frame->stride);
+      cv::Mat display;
+      if (mirror) {
+        cv::flip(wrapped, display, 1);
+      } else {
+        display = wrapped.clone();
+      }
+      if (skeleton && latest && latest->pose &&
+          tracking.state == squatris::inference::TrackingState::usable_pose &&
+          tracking.sequence_matches) {
+        draw_pose(display, *latest->pose, mirror);
+      }
+      if (diagnostics) {
+        draw_diagnostics(display, source->format(), source->statistics(), snapshot, latest, error,
+                         tracking, display_frame->sequence, mirror, synchronized);
+      }
+      cv::imshow("Squatris Pose Lab", display);
+    }
+    if (inference_terminal) {
+      std::cerr << "Inference ended: " << inference_terminal->message << '\n';
+      terminal_failure = true;
       break;
     }
     const auto key = cv::waitKey(1) & 0xFF;
@@ -457,6 +547,8 @@ int main(int argc, char** argv) {
       diagnostics = !diagnostics;
     } else if (key == 'm' || key == 'M') {
       mirror = !mirror;
+    } else if (key == 'f' || key == 'F') {
+      synchronized = !synchronized;
     }
   }
   inference_worker.request_stop();
@@ -465,5 +557,18 @@ int main(int argc, char** argv) {
     inference_worker.join();
   }
   cv::destroyAllWindows();
-  return 0;
+  return terminal_failure ? 1 : 0;
+}
+
+int main(int argc, char** argv) noexcept {
+  try {
+    return run_pose_lab(argc, argv);
+  } catch (const std::exception& exception) {
+    std::fputs("Pose Lab failed with an unexpected error: ", stderr);
+    std::fputs(exception.what(), stderr);
+    std::fputc('\n', stderr);
+  } catch (...) {
+    std::fputs("Pose Lab failed with an unknown error\n", stderr);
+  }
+  return 1;
 }

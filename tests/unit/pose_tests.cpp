@@ -86,6 +86,25 @@ TEST(PoseMapping, RejectsLayoutWithTooFewLandmarks) {
   EXPECT_EQ(mapped.error().code, ErrorCode::invalid_data);
 }
 
+TEST(PoseMapping, MapsPinnedHalpeFeetAndHeels) {
+  std::array<ModelLandmark, 26> source{};
+  for (std::size_t index = 0; index < source.size(); ++index) {
+    source[index] = {static_cast<float>(index * 10), 100.0F, 0.9F};
+  }
+  const auto mapped =
+      squatris::pose::map_landmarks(squatris::pose::LandmarkLayout::halpe26, source, {300, 200});
+  ASSERT_TRUE(mapped);
+  const auto x_for = [&mapped](LandmarkId id) {
+    return mapped.value()[static_cast<std::size_t>(id)]
+        .image.value_or(squatris::pose::NormalizedImagePoint{})
+        .x;
+  };
+  EXPECT_FLOAT_EQ(x_for(LandmarkId::left_foot_index), 200.0F / 300.0F);
+  EXPECT_FLOAT_EQ(x_for(LandmarkId::right_foot_index), 210.0F / 300.0F);
+  EXPECT_FLOAT_EQ(x_for(LandmarkId::left_heel), 240.0F / 300.0F);
+  EXPECT_FLOAT_EQ(x_for(LandmarkId::right_heel), 250.0F / 300.0F);
+}
+
 TEST(PoseValidation, RejectsTimestampInversion) {
   squatris::pose::PoseFrame pose;
   pose.image_size = {640, 480};

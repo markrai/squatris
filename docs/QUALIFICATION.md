@@ -7,42 +7,95 @@
 - Unverified: implemented but not exercised on the required hardware.
 - Blocked: a missing external dependency prevents the check.
 
-## TITAN checklist
+## VENOM status
 
-Record the following before changing any driver or GPU dependency:
+The temporary Intel implementation PC verifies the strict hardware-independent builds and tests, both benchmark modes, the ONNX-enabled CPU build, model-contract validation, manifest checksums, and deterministic CPU RTMPose inference. It does not verify NVIDIA loading, `CUDAExecutionProvider`, TITAN performance, or physical camera behavior. Those items remain unverified rather than failed.
+
+## Transfer from VENOM to TITAN
+
+All Phase 0A.1 changes must remain uncommitted for review. Transfer the working tree and its existing Git metadata without copying build outputs, downloaded dependencies, weights, or prior qualification evidence.
+
+On VENOM, choose an empty transfer directory and copy the repository:
 
 ```powershell
-Get-ComputerInfo | Select-Object WindowsProductName,WindowsVersion,OsBuildNumber,OsArchitecture
-Get-CimInstance Win32_Processor | Select-Object Name,NumberOfCores,NumberOfLogicalProcessors
-Get-CimInstance Win32_VideoController | Select-Object Name,DriverVersion
-nvidia-smi
-nvcc --version
-Get-PnpDevice -Class Camera,Image | Select-Object Status,FriendlyName,InstanceId
-cmake --version
-ninja --version
+$source = 'C:\dev\project\squatris'
+$transfer = 'D:\transfer\squatris-phase0a1'
+if (Test-Path -LiteralPath $transfer) { throw "Transfer directory must not already exist: $transfer" }
+robocopy $source $transfer /E /XD out .deps qualification /XF detector.onnx pose.onnx
+if ($LASTEXITCODE -gt 7) { throw "robocopy failed with exit code $LASTEXITCODE" }
+Push-Location $source
+$files = @(git ls-files --cached --others --exclude-standard)
+$sourceManifest = @($files | ForEach-Object {
+    [ordered]@{ path = $_; sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $_).Hash }
+})
+Pop-Location
+$sourceManifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath 'D:\transfer\squatris-phase0a1-files.json' -Encoding utf8
 ```
 
-Then verify:
+Move both the copied directory and `squatris-phase0a1-files.json` to TITAN. On TITAN, place the directory at `C:\dev\project\squatris`, then verify every reviewable file before running anything:
 
-1. ONNX Runtime reports `CUDAExecutionProvider` in Pose Lab and benchmark output.
-2. An invalid/missing CUDA setup fails instead of reporting CPU.
-3. `--list-cameras` reports each usable device and probed negotiated formats.
-4. The chosen camera actually delivers the requested resolution and measured rate.
-5. Preview mirroring does not swap anatomical arm labels.
-6. Low-confidence or missing points do not create skeleton connections.
-7. Camera disconnect produces an explicit diagnostic and shutdown remains clean.
-8. Prerecorded CUDA benchmark completes with model hashes matching the manifest.
-9. Benchmark JSON records median, p95, p99, skips, errors, and provider.
-10. A sustained Pose Lab session remains responsive and does not accumulate latency.
+```powershell
+$repository = 'C:\dev\project\squatris'
+$expected = Get-Content -LiteralPath 'C:\transfer\squatris-phase0a1-files.json' -Raw | ConvertFrom-Json
+Push-Location $repository
+$actual = @($expected | ForEach-Object {
+    [ordered]@{ path = $_.path; sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.path).Hash }
+})
+$difference = Compare-Object ($expected | ConvertTo-Json -Compress) ($actual | ConvertTo-Json -Compress)
+if ($difference) { throw 'Transferred source hashes do not match VENOM' }
+git status --short
+Pop-Location
+```
 
-The opt-in CTest qualification is registered with the `hardware-required` label and invoked with `ctest --preset windows-hardware`. It does not replace the live-camera observations above.
+The status output must show the Phase 0A.1 working-tree changes. Do not commit them before review.
 
-## Current evidence
+## Reproducible TITAN procedure
 
-The temporary Intel implementation PC verified Media Foundation enumeration and sample delivery for one camera, FFmpeg prerecorded input, the complete CPU RTMPose pipeline, and explicit rejection of an unavailable CUDA provider. It did not verify the TITAN inventory, `CUDAExecutionProvider`, RTX performance, preview anatomy with a person, physical knee-angle quality, disconnect behavior on a real device, or sustained-session responsiveness. Those items remain unverified rather than failed.
+Prerequisites are an existing Visual Studio C++ environment, Git, CMake, Ninja, an NVIDIA driver compatible with CUDA 12, cuDNN 9 discoverable by Windows, a prerecorded qualification video, and a physical camera for the manual observations. The procedure does not install drivers, CUDA, cuDNN, or change global system configuration.
 
-## Physical pose checks
+From a PowerShell development shell on TITAN:
 
-Phase 0A checks only visibility and measurement quality: full-body framing, left/right correctness, confidence under ordinary motion, knee angles through standing and squatting, occlusion recovery, and tracking loss behavior. Gesture acceptance, duplicate hard-drop prevention, and intentional/unintentional activation rates belong to later phases.
+```powershell
+Set-Location C:\dev\project\squatris
+.\scripts\qualify-titan.ps1 `
+    -Video 'C:\qualification-inputs\squatris-full-body.mp4' `
+    -OutputDirectory 'C:\qualification-results\squatris-phase0a1' `
+    -CameraIndex 0 `
+    -WarmupIterations 100 `
+    -MeasuredIterations 2000
+if ($LASTEXITCODE -ne 0) { throw 'Automated TITAN qualification failed' }
+```
 
-Never mark the future 60 updates/s, 80 ms response, 99% intentional recognition, or duplicate-event targets as achieved from mock tests or a short visual smoke test.
+The script records OS, CPU, GPU, driver, camera, tool, CUDA, and cuDNN inventory; verifies pinned vcpkg, ONNX Runtime GPU, and model artifacts; performs a strict release build; runs hardware-independent tests; creates an actual strict CUDA session; verifies provider assignment and model hashes; runs and validates a deterministic prerecorded benchmark; probes camera indices and negotiated modes; and writes `qualification-report.json` plus step logs. Its dependency changes are confined to the repository `.deps`, `models`, `out`, and selected report directories.
+
+The script requires `nvidia-smi` to advertise CUDA 12 or newer driver compatibility. The definitive cuDNN 9 compatibility check is successful CUDA session creation and inference with CPU fallback disabled.
+
+## Physical camera participation
+
+Automated enumeration cannot establish visual correctness. After the script succeeds, a person must run the exact command stored in `qualification-report.json`, normally:
+
+```powershell
+.\out\build\windows-cuda-release\apps\pose-lab\SquatrisPoseLab.exe --camera 0 --backend rtmpose --provider cuda --detector models\detector.onnx --pose models\pose.onnx
+```
+
+Record these observations separately from automated results:
+
+1. Full-body framing and actual negotiated live capture rate.
+2. Anatomical left and right under mirrored and unmirrored preview.
+3. Projected 2D knee-angle behavior through standing and squatting.
+4. Occlusion, low-confidence behavior, and recovery.
+5. Physical camera disconnect and shutdown behavior.
+6. Sustained responsiveness and whether latency accumulates.
+
+Frame-synchronized mode is the default. Press `F` to compare low-latency preview behavior. In low-latency mode a mismatched skeleton must be suppressed, and diagnostics must report the preview and pose sequences as mismatched.
+
+## Acceptance checklist
+
+1. `qualification-report.json` has `passed: true` and every automated step passed.
+2. CUDA benchmark reports contain `CUDAExecutionProvider`, `strict_provider_assignment: true`, and `checksums_verified: true`.
+3. Report validation succeeds and deterministic `frames_skipped` is zero.
+4. Prerecorded frame identifiers and media timestamps match the selected source order.
+5. Camera enumeration records at least one device and its probed negotiated modes.
+6. All physical observations are attached with the human participant, time, device, and outcome.
+
+The future 60 updates/s, 80 ms response, recognition, and duplicate-event targets cannot be marked achieved from mock tests or a short visual smoke test. Player identity and gesture behavior are outside Phase 0A.1.

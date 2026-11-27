@@ -1,49 +1,78 @@
 param(
-    [string]$Destination = (Join-Path $PSScriptRoot '..\models')
+    [string]$Destination = (Join-Path $PSScriptRoot '..\models'),
+    [string]$Manifest = (Join-Path $PSScriptRoot '..\models\manifest.json')
 )
 
 $ErrorActionPreference = 'Stop'
-$destinationPath = [IO.Path]::GetFullPath($Destination)
-New-Item -ItemType Directory -Path $destinationPath -Force | Out-Null
-$artifacts = @(
-    @{
-        Name = 'detector'
-        Url = 'https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/yolox_tiny_8xb8-300e_humanart-6f3252f9.zip'
-        ArchiveHash = '36E09CA555916253FA1B5D51BEC01E48E98E1F0AF966C51CE3E844D8C8FC4CFC'
-        OnnxHash = 'CEB11C07298F95C50D7C5ABEB906D03340C85F23AA79E3E66966E7FB6C307250'
-    },
-    @{
-        Name = 'pose'
-        Url = 'https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/rtmpose-m_simcc-body7_pt-body7-halpe26_700e-256x192-4d3e73dd_20230605.zip'
-        ArchiveHash = '55B81170E236040B59FC792AD0A8315301AC4C079A3BDB1095D838AAD3088D18'
-        OnnxHash = '26F3A19E61304A600DFB82D1001D41D24343B89FC70A33FFC84657E0B0BF2ECF'
-    }
-)
 
-foreach ($artifact in $artifacts) {
-    $archive = Join-Path $destinationPath "$($artifact.Name).zip"
-    $extract = Join-Path $destinationPath ".$($artifact.Name)-extract"
-    Invoke-WebRequest -Uri $artifact.Url -OutFile $archive
-    $archiveHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash
-    if ($archiveHash -ne $artifact.ArchiveHash) {
-        throw "Checksum mismatch for $archive"
+function Assert-SafeDirectory {
+    param([string]$Path)
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    $rootPath = [IO.Path]::GetPathRoot($fullPath)
+    if ($fullPath.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) -eq
+        $rootPath.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)) {
+        throw "Refusing to use a filesystem root as a destination: $fullPath"
     }
-    if (Test-Path $extract) {
-        Remove-Item -LiteralPath $extract -Recurse -Force
+    if (Test-Path -LiteralPath $fullPath -PathType Leaf) {
+        throw "Destination is a file: $fullPath"
     }
-    Expand-Archive -LiteralPath $archive -DestinationPath $extract
-    $onnxFiles = @(Get-ChildItem -LiteralPath $extract -Recurse -Filter '*.onnx' -File)
-    if ($onnxFiles.Count -ne 1) {
-        throw "Expected exactly one ONNX file in $archive"
-    }
-    $onnxHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $onnxFiles[0].FullName).Hash
-    if ($onnxHash -ne $artifact.OnnxHash) {
-        throw "ONNX checksum mismatch for $archive"
-    }
-    Copy-Item -LiteralPath $onnxFiles[0].FullName -Destination (Join-Path $destinationPath "$($artifact.Name).onnx") -Force
-    Remove-Item -LiteralPath $extract -Recurse -Force
-    Remove-Item -LiteralPath $archive -Force
+    return $fullPath
 }
 
-Write-Output "Verified models acquired in $destinationPath"
+$destinationPath = Assert-SafeDirectory $Destination
+$manifestPath = [IO.Path]::GetFullPath($Manifest)
+if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+    throw "Model manifest does not exist: $manifestPath"
+}
+$modelManifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+if ($modelManifest.schema_version -ne 1 -or -not $modelManifest.artifacts) {
+    throw "Unsupported or empty model manifest: $manifestPath"
+}
+New-Item -ItemType Directory -Path $destinationPath -Force | Out-Null
 
+foreach ($artifact in $modelManifest.artifacts) {
+    if (-not $artifact.id -or -not $artifact.url -or -not $artifact.archive_sha256 -or
+        -not $artifact.onnx_sha256 -or -not $artifact.onnx_file) {
+        throw "Model manifest artifact is incomplete"
+    }
+    $target = Join-Path $destinationPath ([IO.Path]::GetFileName([string]$artifact.onnx_file))
+    if (Test-Path -LiteralPath $target -PathType Leaf) {
+        $existingHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $target).Hash
+        if ($existingHash -ieq [string]$artifact.onnx_sha256) {
+            Write-Output "Verified existing model: $target"
+            continue
+        }
+    }
+
+    $operationId = [Guid]::NewGuid().ToString('N')
+    $archive = Join-Path $destinationPath ".$($artifact.id)-$operationId.zip"
+    $extract = Join-Path $destinationPath ".$($artifact.id)-$operationId"
+    try {
+        Invoke-WebRequest -Uri ([string]$artifact.url) -OutFile $archive
+        $archiveHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash
+        if ($archiveHash -ine [string]$artifact.archive_sha256) {
+            throw "Archive checksum mismatch for $($artifact.id)"
+        }
+        New-Item -ItemType Directory -Path $extract | Out-Null
+        Expand-Archive -LiteralPath $archive -DestinationPath $extract
+        $onnxFiles = @(Get-ChildItem -LiteralPath $extract -Recurse -Filter '*.onnx' -File)
+        if ($onnxFiles.Count -ne 1) {
+            throw "Expected exactly one ONNX file for $($artifact.id)"
+        }
+        $onnxHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $onnxFiles[0].FullName).Hash
+        if ($onnxHash -ine [string]$artifact.onnx_sha256) {
+            throw "ONNX checksum mismatch for $($artifact.id)"
+        }
+        Copy-Item -LiteralPath $onnxFiles[0].FullName -Destination $target -Force
+    } finally {
+        if (Test-Path -LiteralPath $extract) {
+            Remove-Item -LiteralPath $extract -Recurse -Force
+        }
+        if (Test-Path -LiteralPath $archive) {
+            Remove-Item -LiteralPath $archive -Force
+        }
+    }
+    Write-Output "Acquired and verified model: $target"
+}
+
+Write-Output "All manifest models are verified in $destinationPath"
