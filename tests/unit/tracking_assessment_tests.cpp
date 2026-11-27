@@ -15,7 +15,7 @@ squatris::inference::InferenceResult result_with_landmarks(squatris::pose::TimeP
   squatris::pose::PoseFrame pose;
   pose.sequence = sequence;
   pose.captured_at = captured_at;
-  pose.inference_completed_at = captured_at + 10ms;
+  pose.inference_completed_at = captured_at;
   pose.image_size = {640, 480};
   pose.inference_backend = "failure-injection-fixture";
   for (std::size_t index = 0; index < landmark_count && index < pose.landmarks.size(); ++index) {
@@ -93,6 +93,31 @@ TEST(TrackingAssessment, ReportsFrameMismatchWithoutRelabelingItCurrent) {
   EXPECT_EQ(assessment.state, squatris::inference::TrackingState::usable_pose);
   EXPECT_FALSE(assessment.sequence_matches);
   EXPECT_EQ(assessment.pose_sequence, 10);
+}
+
+TEST(TrackingAssessment, RejectsMalformedAndFutureTimestamps) {
+  const auto now = squatris::pose::Clock::now();
+  auto future_capture = result_with_landmarks(now + 1ms, 11, 4);
+  const auto future = squatris::inference::assess_tracking(
+      {&future_capture, nullptr, now, std::nullopt, 11, now}, {});
+  EXPECT_EQ(future.state, squatris::inference::TrackingState::unavailable);
+  EXPECT_EQ(future.reason, squatris::inference::TrackingReason::invalid_timestamp);
+
+  auto future_completion = result_with_landmarks(now - 20ms, 12, 4);
+  future_completion.pose->inference_completed_at = now + 1ms;
+  const auto completion = squatris::inference::assess_tracking(
+      {&future_completion, nullptr, now, std::nullopt, 12, now}, {});
+  EXPECT_EQ(completion.reason, squatris::inference::TrackingReason::invalid_timestamp);
+
+  auto reversed = result_with_landmarks(now - 20ms, 13, 4);
+  reversed.pose->inference_completed_at = now - 21ms;
+  const auto malformed =
+      squatris::inference::assess_tracking({&reversed, nullptr, now, std::nullopt, 13, now}, {});
+  EXPECT_EQ(malformed.reason, squatris::inference::TrackingReason::invalid_timestamp);
+
+  const auto future_observation = squatris::inference::assess_tracking(
+      {&reversed, nullptr, now + 1ms, std::nullopt, 13, now}, {});
+  EXPECT_EQ(future_observation.reason, squatris::inference::TrackingReason::invalid_timestamp);
 }
 
 }

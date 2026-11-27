@@ -144,10 +144,21 @@ Ort::Env make_environment() {
   return environment;
 }
 
-Ort::SessionOptions session_options(ExecutionProvider provider, int device_id) {
+std::filesystem::path profiling_prefix(const RtmposeConfig& config, std::string_view session) {
+  if (config.profiling_output_prefix.empty()) {
+    return {};
+  }
+  return config.profiling_output_prefix.string() + "-" + std::string(session);
+}
+
+Ort::SessionOptions session_options(ExecutionProvider provider, int device_id,
+                                    const std::filesystem::path& profile_prefix) {
   Ort::SessionOptions options;
   options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
   options.SetExecutionMode(ExecutionMode::ORT_SEQUENTIAL);
+  if (!profile_prefix.empty()) {
+    options.EnableProfiling(profile_prefix.c_str());
+  }
   if (provider == ExecutionProvider::cuda) {
     options.AddConfigEntry("session.disable_cpu_ep_fallback", "1");
 #if SQUATRIS_ORT_HAS_CUDA
@@ -160,6 +171,16 @@ Ort::SessionOptions session_options(ExecutionProvider provider, int device_id) {
 #endif
   }
   return options;
+}
+
+Ort::Session make_session(Ort::Env& environment, const std::filesystem::path& model,
+                          Ort::SessionOptions options, std::string_view name) {
+  try {
+    return Ort::Session(environment, model.c_str(), options);
+  } catch (const Ort::Exception& exception) {
+    throw std::runtime_error(std::string(name) +
+                             " session initialization failed: " + exception.what());
+  }
 }
 
 bool provider_available(std::string_view expected) {
@@ -230,10 +251,14 @@ cv::Mat affine_pose_crop(const cv::Mat& source, const BoundingBox& box, cv::Poin
 struct RtmposeEstimator::Impl {
   explicit Impl(RtmposeConfig source_config)
       : config(std::move(source_config)), environment(make_environment()),
-        detector(environment, config.detector_model.c_str(),
-                 session_options(config.provider, config.cuda_device_id)),
-        pose(environment, config.pose_model.c_str(),
-             session_options(config.provider, config.cuda_device_id)),
+        detector(make_session(environment, config.detector_model,
+                              session_options(config.provider, config.cuda_device_id,
+                                              profiling_prefix(config, "detector")),
+                              "detector")),
+        pose(make_session(environment, config.pose_model,
+                          session_options(config.provider, config.cuda_device_id,
+                                          profiling_prefix(config, "pose")),
+                          "pose")),
         detector_inputs(input_names(detector, allocator)),
         detector_outputs(output_names(detector, allocator)),
         pose_inputs(input_names(pose, allocator)), pose_outputs(output_names(pose, allocator)) {
@@ -250,6 +275,7 @@ struct RtmposeEstimator::Impl {
   ModelNames detector_outputs;
   ModelNames pose_inputs;
   ModelNames pose_outputs;
+  std::optional<std::vector<ProviderProfile>> profiles;
 };
 
 #else
@@ -328,10 +354,16 @@ Result<squatris::inference::InferenceResult> RtmposeEstimator::infer(const input
     auto detector_tensor = Ort::Value::CreateTensor<float>(
         memory, detector_tensor_data.data(), detector_tensor_data.size(), detector_shape.data(),
         detector_shape.size());
+    result.timings.detector_preprocessing = std::chrono::duration_cast<std::chrono::microseconds>(
+        pose::Clock::now() - detection_started);
+    const auto detector_inference_started = pose::Clock::now();
     auto detector_outputs = implementation_->detector.Run(
         Ort::RunOptions{nullptr}, implementation_->detector_inputs.values.data(), &detector_tensor,
         1, implementation_->detector_outputs.values.data(),
         implementation_->detector_outputs.values.size());
+    result.timings.detector_inference = std::chrono::duration_cast<std::chrono::microseconds>(
+        pose::Clock::now() - detector_inference_started);
+    const auto detector_postprocessing_started = pose::Clock::now();
     if (detector_outputs.size() < 2 || !detector_outputs[0].IsTensor() ||
         !detector_outputs[1].IsTensor()) {
       return Status{ErrorCode::inference_failed, "Detector outputs do not match the manifest"};
@@ -375,6 +407,8 @@ Result<squatris::inference::InferenceResult> RtmposeEstimator::infer(const input
     }
     result.timings.person_detection = std::chrono::duration_cast<std::chrono::microseconds>(
         pose::Clock::now() - detection_started);
+    result.timings.detector_postprocessing = std::chrono::duration_cast<std::chrono::microseconds>(
+        pose::Clock::now() - detector_postprocessing_started);
     if (!selected || selected->right <= selected->left || selected->bottom <= selected->top) {
       result.timings.end_to_end =
           std::chrono::duration_cast<std::chrono::microseconds>(pose::Clock::now() - started);
@@ -492,6 +526,35 @@ std::string RtmposeEstimator::execution_provider() const {
   }
 #endif
   return "unavailable";
+}
+
+Result<std::vector<ProviderProfile>> RtmposeEstimator::finalize_provider_profiling() {
+#if SQUATRIS_HAS_ONNXRUNTIME
+  if (!implementation_) {
+    return Status{ErrorCode::initialization_failed, "RTMPose backend is not initialized"};
+  }
+  if (implementation_->config.profiling_output_prefix.empty()) {
+    return Status{ErrorCode::invalid_argument, "ONNX Runtime profiling was not enabled"};
+  }
+  if (implementation_->profiles.has_value()) {
+    return *implementation_->profiles;
+  }
+  try {
+    std::vector<ProviderProfile> profiles;
+    const auto detector =
+        implementation_->detector.EndProfilingAllocated(implementation_->allocator);
+    const auto pose = implementation_->pose.EndProfilingAllocated(implementation_->allocator);
+    profiles.push_back({"detector", std::filesystem::path(detector.get())});
+    profiles.push_back({"pose", std::filesystem::path(pose.get())});
+    implementation_->profiles = profiles;
+    return profiles;
+  } catch (const Ort::Exception& exception) {
+    return Status{ErrorCode::io_error,
+                  "Could not finalize ONNX Runtime profiling: " + std::string(exception.what())};
+  }
+#else
+  return Status{ErrorCode::unavailable, "RTMPose backend is not compiled"};
+#endif
 }
 
 }

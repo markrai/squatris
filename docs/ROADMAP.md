@@ -20,4 +20,4 @@
 
 Future gestures will use temporal state machines, player calibration, hysteresis, confidence gating, and explicit rearming. Tracking loss will fail closed. Qualification will report intentional recall and unintended activations separately.
 
-Phase 0B must not start until Phase 0A.1 is reviewed and the hardened pipeline is qualified on TITAN. A ready-for-review status on VENOM does not satisfy the TITAN gate.
+Phase 0B must not start until Phase 0A.2 strict CUDA inference and physical qualification are complete on TITAN. Hardware-independent success or a partial TITAN report does not satisfy the gate.

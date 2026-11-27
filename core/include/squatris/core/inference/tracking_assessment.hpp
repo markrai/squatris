@@ -18,6 +18,7 @@ enum class TrackingReason {
   no_person,
   pose_missing,
   insufficient_landmarks,
+  invalid_timestamp,
   stale_pose,
   capture_stalled,
   source_failure

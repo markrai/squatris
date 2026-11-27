@@ -27,11 +27,11 @@ Real-time simulation of the same footage:
 
 ## Methodology
 
-Model and session initialization occur before timing. Warm-up frames execute the complete pipeline and have their own statistics and frame evidence; they never enter the measured statistics. Both phases record frame acquisition, frame age at inference start, person detection, pose preprocessing, synchronous ONNX Runtime execution, pose postprocessing, and estimator end-to-end duration.
+Model and session initialization time and first-inference latency are reported separately. Warm-up frames execute the complete pipeline and have their own statistics and frame evidence; they never enter the measured statistics. Both phases record frame acquisition, frame age at inference start, detector preprocessing, synchronous detector execution, detector postprocessing, complete person detection, pose preprocessing, synchronous pose execution, pose postprocessing, estimator end-to-end duration, and capture-delivery-to-pose-completion latency.
 
-Median, p95, and p99 use linear interpolation over sorted samples. Every processed frame records its source sequence, source-frame index, source-media timestamp, person-detection state, and usable-pose state. Deterministic reports are invalid if any frame was skipped. Real-time reports retain sequence gaps as skipped frames. Errors and frames with no usable pose are counted separately. Throughput is successful pipeline iterations per phase wall time; it must not be interpreted as camera delivery rate.
+Median, p95, and p99 use linear interpolation over sorted samples. Every processed frame records its source sequence, source-frame index, source-media timestamp, person-detection state, generic pose availability, canonical tracking assessment, full-body completeness, and independent left/right coverage of shoulders, elbows, wrists, hips, knees, and ankles. Deterministic reports are invalid if any frame was skipped. Real-time reports retain sequence gaps as skipped frames. Errors, absent poses, unusable poses, and full-body completeness are counted separately. Useful-pose throughput uses the canonical tracking assessment. It must not be interpreted as camera delivery rate.
 
-Schema 2 output includes the source-video SHA-256, exact processed-frame evidence, provider, verified model hashes, build and dependency data, host data, execution mode, warm-up and measured statistics, skips, deadlines, throughput, and terminal errors. Unknown providers are rejected. Repeated acquisition or inference failures stop at `--max-consecutive-failures`; the whole execution stops at `--deadline-seconds`.
+Schema 3 output includes the source-video SHA-256, exact processed-frame evidence, provider, verified model hashes, build and dependency data, host data, execution mode, warm-up and measured statistics, skips, deadlines, throughput, terminal errors, timing attribution, and provider profiling. A valid failure report is written before native initialization so an external watchdog can preserve evidence from a blocked or failed run. Unknown providers are rejected. Repeated acquisition or inference failures stop at `--max-consecutive-failures`; the in-process deadline remains a secondary bound behind the qualification script's external process watchdog.
 
 The deterministic mode does not loop. The input must contain at least `warmup + iterations` frames. A short or corrupt input produces a failed report instead of silently reusing footage.
 
@@ -41,8 +41,8 @@ Validate any saved report programmatically:
 .\out\build\windows-cuda-release\tools\benchmark\SquatrisPoseBenchmark.exe --validate-report benchmarks\results\titan-cuda.json
 ```
 
-Validation checks the schema, provider, checksum evidence, phase counts, frame evidence, source hash, success consistency, and deterministic zero-skip invariant.
+Validation checks the schema, provider and profiling evidence, checksum syntax, phase counts, frame/source ordering, landmark aggregates, timing arithmetic, percentile sample counts, source hash, terminal errors, success consistency, and deterministic zero-skip invariant.
 
-CPU mock results validate infrastructure only. They are not RTMPose performance evidence. CUDA results are valid only when the reported provider is `CUDAExecutionProvider`, `strict_provider_assignment` is true, model checksums match the authoritative manifest, report validation succeeds, and the report status is successful.
+CPU mock results validate infrastructure only. They are not RTMPose performance evidence. CUDA results are valid only when both detector and pose ONNX Runtime profiles contain CUDA node events and no CPU or unknown-provider node events, the reported provider is `CUDAExecutionProvider`, `strict_provider_assignment` is true, model checksums match the authoritative manifest, report validation succeeds, and the report status is successful. CUDA graph execution is disabled and is never inferred from ordinary CUDA execution-provider use.
 
-The 60-update/s and 80 ms response targets remain engineering targets. Phase 0A.1 does not claim they have been met.
+The 60-update/s and 80 ms response targets remain engineering targets. Phase 0A.2 does not claim they have been met.

@@ -9,7 +9,7 @@
 | vcpkg registry | `9fa95bf687fa6ae7f2da0673a8067e5fc1515c27` | Manifest dependency resolution |
 | ONNX Runtime | 1.20.1 | CPU and CUDA inference |
 | CUDA | 12.x | Required by the selected ORT GPU package |
-| cuDNN | 9.x | Required by the selected ORT GPU package |
+| cuDNN | 9.1.0.70 | Required by the selected ORT GPU package; repository-local CUDA 12 runtime |
 | OpenCV | 4.14.0 | Capture, image transforms, diagnostics |
 | GoogleTest | 1.18.0 | Tests |
 | nlohmann/json | 3.12.0 | Benchmark output |
@@ -22,7 +22,9 @@ The vcpkg commit pins transitive port versions and build recipes. `vcpkg.json` d
 
 ONNX Runtime's official CUDA provider matrix states that 1.20.x CUDA 12 packages use cuDNN 9.x; cuDNN major versions are not interchangeable. This older pinned runtime is intentional because later runtime releases changed minimum CUDA requirements. TITAN must be inventoried before any CUDA or cuDNN installation decision.
 
-The acquisition script uses Microsoft NuGet packages because the official GitHub repository and release downloads returned 404 during the 2026-11-26 environment check. Package version, Microsoft package identity, embedded repository commit `5c1b7ccbff7e5141c1da7a9d963d660e5741c319`, and NuGet SHA-512 are pinned. CPU and GPU variants install into `.deps/onnxruntime/cpu` and `.deps/onnxruntime/gpu`; a managed-install marker prevents an existing directory or one variant from being overwritten by the other.
+The acquisition script uses Microsoft NuGet packages because the official GitHub repository and release downloads returned 404 during the 2026-11-26 environment check. Package version, Microsoft package identity, embedded repository commit `5c1b7ccbff7e5141c1da7a9d963d660e5741c319`, and NuGet SHA-512 are pinned. CPU and GPU variants install into `.deps/onnxruntime/cpu` and `.deps/onnxruntime/gpu`; a managed-install marker prevents an existing directory or one variant from being overwritten by the other. The Windows GPU package exposes headers under `buildTransitive/native/include`, which the installer stages into its normalized local layout.
+
+`scripts/acquire-cudnn.ps1` installs only the pinned NVIDIA cuDNN 9.1.0.70 CUDA 12 runtime into `.deps/cudnn/9.1.0.70`. It verifies NVIDIA's published archive SHA-256 `3083b5bf20b0b2b29305de088e0b2cdbb78b5190655a27e8a7c596e47042eedf`. Qualification prepends its `bin` directory to that process's `PATH`; no machine-wide PATH or CUDA installation is changed.
 
 Bootstrap scripts fail on native command errors, reject filesystem roots and unexpected existing destinations, stage downloads in unique directories, verify content before placement, and are idempotent after a verified install. Model acquisition reads URLs, filenames, and both hashes exclusively from `models/manifest.json`.
 

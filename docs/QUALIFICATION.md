@@ -1,5 +1,7 @@
 # Qualification
 
+Phase 0A.2 TITAN results and the current strict CUDA provider blocker are recorded in [PHASE-0A2-TITAN-QUALIFICATION.md](PHASE-0A2-TITAN-QUALIFICATION.md). The Phase 0A.1 transfer procedure below remains historical preparation context.
+
 ## Status classes
 
 - Automated-test verified: deterministic behavior proven without physical hardware.

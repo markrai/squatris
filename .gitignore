@@ -13,6 +13,7 @@ models/*.pt
 models/*.zip
 captures/
 benchmarks/results/
+qualification/
 *.avi
 *.mp4
 *.mov

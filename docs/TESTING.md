@@ -19,7 +19,9 @@ The suite covers:
 - Single-use source lifecycle and worker-exception translation.
 - Person detection versus usable pose, frame mismatch, freshness, capture stall, source failure, and deterministic inference-failure invalidation.
 - Exact in-order sequential acquisition with source indices and timestamps.
-- Deterministic and real-time benchmark execution plus schema-2 report validation.
+- Deterministic and real-time benchmark execution plus schema-3 report validation.
+- Rejection of corrupted frame ordering, phase counts, timing counts, hashes, terminal errors, and success invariants.
+- Valid machine-readable benchmark reports for initialization failures.
 - Pinned RTMPose preprocessing and SimCC reference fixtures.
 
 The CPU ONNX-enabled preset compiles the complete native inference backend and runs the same hardware-independent suite without model weights:

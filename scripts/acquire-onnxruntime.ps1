@@ -70,7 +70,7 @@ try {
     }
     New-Item -ItemType Directory -Path $extract | Out-Null
     Expand-Archive -LiteralPath $archive -DestinationPath $extract
-    $includeSource = Join-Path $extract 'build\native\include'
+    $includeSource = Join-Path $extract 'buildTransitive\native\include'
     $librarySource = Join-Path $extract 'runtimes\win-x64\native'
     if (-not (Test-Path -LiteralPath (Join-Path $includeSource 'onnxruntime_cxx_api.h')) -or
         -not (Test-Path -LiteralPath (Join-Path $librarySource 'onnxruntime.dll'))) {

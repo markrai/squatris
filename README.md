@@ -1,6 +1,6 @@
 # Squatris
 
-Squatris is a Windows-first motion-controlled falling-block game. This repository currently contains Phase 0A.1: a hardened game-independent native pose foundation and the Squatris Pose Lab diagnostic application. It does not contain gameplay, gesture recognition, player identity tracking, Godot integration, networking, or cloud inference.
+Squatris is a Windows-first motion-controlled falling-block game. This repository currently contains the Phase 0A.2 qualification-hardened, game-independent native pose foundation and the Squatris Pose Lab diagnostic application. TITAN qualification is partial because strict CUDA session initialization remains blocked as recorded in [PHASE-0A2-TITAN-QUALIFICATION.md](docs/PHASE-0A2-TITAN-QUALIFICATION.md). The repository does not contain gameplay, gesture recognition, player identity tracking, Godot integration, networking, or cloud inference.
 
 The production path is C++20, OpenCV camera capture, RTMPose through ONNX Runtime, and an explicit CUDA execution provider. CPU inference, synthetic capture, prerecorded capture, and a deterministic mock estimator are available for development and hardware-independent testing.
 
@@ -40,7 +40,9 @@ Acquire verified model files and configure CPU or CUDA inference:
 ```powershell
 .\scripts\acquire-models.ps1
 .\scripts\acquire-onnxruntime.ps1 -Variant gpu
+.\scripts\acquire-cudnn.ps1
 $env:SQUATRIS_ONNXRUNTIME_ROOT=(Resolve-Path '.\.deps\onnxruntime\gpu')
+$env:PATH="$(Resolve-Path '.\.deps\cudnn\9.1.0.70\bin');$env:CUDA_PATH\bin;$env:PATH"
 cmake --preset windows-cuda-release
 cmake --build --preset windows-cuda-release
 .\out\build\windows-cuda-release\apps\pose-lab\SquatrisPoseLab.exe --camera 0 --backend rtmpose --provider cuda

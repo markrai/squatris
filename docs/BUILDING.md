@@ -1,6 +1,6 @@
 # Building
 
-## Supported Phase 0A.1 host
+## Supported Phase 0A.2 host
 
 The intended host is Windows 11 x64 with MSVC and the Windows SDK. CMake 3.28 or newer and Ninja are required. Visual Studio's bundled CMake and Ninja are sufficient when their directories are added to `PATH`, or when commands are invoked by absolute path. Run configure and build commands inside an x64 Visual Studio developer shell so MSVC's standard-library and SDK paths are available.
 
@@ -46,12 +46,14 @@ ONNX Runtime 1.20.1 GPU is pinned because its official compatibility matrix supp
 
 ```powershell
 .\scripts\acquire-onnxruntime.ps1 -Variant gpu
+.\scripts\acquire-cudnn.ps1
 $env:SQUATRIS_ONNXRUNTIME_ROOT=(Resolve-Path '.\.deps\onnxruntime\gpu')
+$env:PATH="$(Resolve-Path '.\.deps\cudnn\9.1.0.70\bin');$env:CUDA_PATH\bin;$env:PATH"
 cmake --preset windows-cuda-release
 cmake --build --preset windows-cuda-release
 ```
 
-The GPU NuGet package is pinned by SHA-512. All native DLLs are copied beside built executables. CUDA and cuDNN DLL discovery still follows ONNX Runtime's documented Windows runtime rules.
+The GPU NuGet package is pinned by SHA-512. All ONNX Runtime native DLLs are copied beside built executables. CUDA 12 and cuDNN 9 DLL discovery uses only the process-local `PATH` shown above. A CUDA session continues to fail closed when any graph node would require the default CPU execution provider.
 
 ## Models and Pose Lab
 

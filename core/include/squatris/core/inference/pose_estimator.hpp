@@ -14,6 +14,9 @@ struct InferenceTimings {
   std::chrono::microseconds frame_acquisition{};
   std::chrono::microseconds frame_age_at_start{};
   std::chrono::microseconds person_detection{};
+  std::chrono::microseconds detector_preprocessing{};
+  std::chrono::microseconds detector_inference{};
+  std::chrono::microseconds detector_postprocessing{};
   std::chrono::microseconds pose_preprocessing{};
   std::chrono::microseconds pose_inference{};
   std::chrono::microseconds pose_postprocessing{};

@@ -26,6 +26,11 @@ TrackingAssessment assess_tracking(const TrackingInput& input, const TrackingPol
     assessment.reason = TrackingReason::source_failure;
     return assessment;
   }
+  if (input.now == pose::TimePoint{} ||
+      (input.last_capture_observed_at.has_value() && *input.last_capture_observed_at > input.now)) {
+    assessment.reason = TrackingReason::invalid_timestamp;
+    return assessment;
+  }
   if (!input.last_capture_observed_at.has_value() ||
       input.now - *input.last_capture_observed_at > policy.maximum_capture_gap) {
     assessment.reason = TrackingReason::capture_stalled;
@@ -51,10 +56,16 @@ TrackingAssessment assess_tracking(const TrackingInput& input, const TrackingPol
   const auto& pose_frame = *input.result->pose;
   assessment.pose_sequence = pose_frame.sequence;
   assessment.sequence_matches = pose_frame.sequence == input.displayed_frame_sequence;
-  if (input.now >= pose_frame.captured_at) {
-    assessment.pose_age =
-        std::chrono::duration_cast<std::chrono::microseconds>(input.now - pose_frame.captured_at);
+  if (pose_frame.captured_at == pose::TimePoint{} ||
+      pose_frame.inference_completed_at == pose::TimePoint{} ||
+      pose_frame.captured_at > input.now || pose_frame.inference_completed_at > input.now ||
+      pose_frame.inference_completed_at < pose_frame.captured_at) {
+    assessment.state = TrackingState::unavailable;
+    assessment.reason = TrackingReason::invalid_timestamp;
+    return assessment;
   }
+  assessment.pose_age =
+      std::chrono::duration_cast<std::chrono::microseconds>(input.now - pose_frame.captured_at);
   if (assessment.pose_age > policy.maximum_pose_age) {
     assessment.state = TrackingState::unavailable;
     assessment.reason = TrackingReason::stale_pose;
@@ -102,6 +113,8 @@ const char* to_string(TrackingReason reason) noexcept {
     return "pose-missing";
   case TrackingReason::insufficient_landmarks:
     return "insufficient-landmarks";
+  case TrackingReason::invalid_timestamp:
+    return "invalid-timestamp";
   case TrackingReason::stale_pose:
     return "stale-pose";
   case TrackingReason::capture_stalled:

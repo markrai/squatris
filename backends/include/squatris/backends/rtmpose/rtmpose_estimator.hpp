@@ -2,6 +2,8 @@
 
 #include <filesystem>
 #include <memory>
+#include <string>
+#include <vector>
 
 #include "squatris/core/inference/pose_estimator.hpp"
 
@@ -16,6 +18,12 @@ struct RtmposeConfig {
   int cuda_device_id{};
   float detection_threshold{0.5F};
   float landmark_threshold{0.2F};
+  std::filesystem::path profiling_output_prefix;
+};
+
+struct ProviderProfile {
+  std::string session;
+  std::filesystem::path path;
 };
 
 class RtmposeEstimator final : public squatris::inference::IPoseEstimator {
@@ -32,6 +40,7 @@ public:
   infer(const input::Frame& frame) override;
   [[nodiscard]] std::string backend_name() const override;
   [[nodiscard]] std::string execution_provider() const override;
+  [[nodiscard]] Result<std::vector<ProviderProfile>> finalize_provider_profiling();
 
 private:
   struct Impl;

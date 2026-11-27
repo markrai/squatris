@@ -27,6 +27,12 @@ add_test(NAME squatris-benchmark-deterministic-report-validation
   COMMAND squatris-pose-benchmark --validate-report
           ${CMAKE_CURRENT_BINARY_DIR}/benchmark-deterministic-smoke.json
 )
+add_test(NAME squatris-benchmark-report-corruption-rejection
+  COMMAND ${CMAKE_COMMAND}
+          -DBENCHMARK=$<TARGET_FILE:squatris-pose-benchmark>
+          -DREPORT=${CMAKE_CURRENT_BINARY_DIR}/benchmark-deterministic-smoke.json
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/benchmark_report_validation.cmake
+)
 add_test(NAME squatris-benchmark-realtime-smoke
   COMMAND squatris-pose-benchmark --mode realtime --backend mock --warmup 2 --iterations 5
           --output ${CMAKE_CURRENT_BINARY_DIR}/benchmark-realtime-smoke.json
@@ -38,11 +44,25 @@ add_test(NAME squatris-benchmark-realtime-report-validation
 add_test(NAME squatris-benchmark-rejects-unknown-provider
   COMMAND squatris-pose-benchmark --mode deterministic --backend mock --provider unknown
 )
+add_test(NAME squatris-benchmark-failure-report
+  COMMAND squatris-pose-benchmark --backend rtmpose
+          --detector ${CMAKE_CURRENT_BINARY_DIR}/missing-detector.onnx
+          --pose ${CMAKE_CURRENT_BINARY_DIR}/missing-pose.onnx
+          --output ${CMAKE_CURRENT_BINARY_DIR}/benchmark-failure.json
+)
+add_test(NAME squatris-benchmark-failure-report-validation
+  COMMAND squatris-pose-benchmark --validate-report
+          ${CMAKE_CURRENT_BINARY_DIR}/benchmark-failure.json
+)
 set_tests_properties(squatris-benchmark-deterministic-smoke PROPERTIES
   LABELS "integration;hardware-independent"
   FIXTURES_SETUP deterministic_benchmark_report
 )
 set_tests_properties(squatris-benchmark-deterministic-report-validation PROPERTIES
+  LABELS "integration;hardware-independent"
+  FIXTURES_REQUIRED deterministic_benchmark_report
+)
+set_tests_properties(squatris-benchmark-report-corruption-rejection PROPERTIES
   LABELS "integration;hardware-independent"
   FIXTURES_REQUIRED deterministic_benchmark_report
 )
@@ -57,6 +77,15 @@ set_tests_properties(squatris-benchmark-realtime-report-validation PROPERTIES
 set_tests_properties(squatris-benchmark-rejects-unknown-provider PROPERTIES
   LABELS "integration;hardware-independent"
   WILL_FAIL TRUE
+)
+set_tests_properties(squatris-benchmark-failure-report PROPERTIES
+  LABELS "integration;hardware-independent"
+  WILL_FAIL TRUE
+  FIXTURES_SETUP failed_benchmark_report
+)
+set_tests_properties(squatris-benchmark-failure-report-validation PROPERTIES
+  LABELS "integration;hardware-independent"
+  FIXTURES_REQUIRED failed_benchmark_report
 )
 
 if(SQUATRIS_ENABLE_HARDWARE_TESTS)
@@ -76,6 +105,7 @@ if(SQUATRIS_ENABLE_HARDWARE_TESTS)
 
   add_test(NAME squatris-hardware-provider-smoke
     COMMAND squatris-pose-benchmark
+      --video ${SQUATRIS_HARDWARE_VIDEO}
       --backend rtmpose
       --provider ${SQUATRIS_HARDWARE_PROVIDER}
       --mode deterministic
