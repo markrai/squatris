@@ -5,11 +5,12 @@ add_library(squatris_backends STATIC
   camera/synthetic_source.cpp
   inference/mock_pose_estimator.cpp
   rtmpose/model_math.cpp
+  rtmpose/provider_audit.cpp
   rtmpose/rtmpose_estimator.cpp
 )
 target_include_directories(squatris_backends PUBLIC include)
 target_link_libraries(squatris_backends
-  PUBLIC squatris_core squatris_project_options
+  PUBLIC nlohmann_json::nlohmann_json squatris_core squatris_project_options
   PRIVATE opencv_core opencv_imgproc opencv_videoio
 )
 target_compile_definitions(squatris_backends PUBLIC

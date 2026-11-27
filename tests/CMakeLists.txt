@@ -114,6 +114,7 @@ if(SQUATRIS_ENABLE_HARDWARE_TESTS)
       --detector ${PROJECT_SOURCE_DIR}/models/detector.onnx
       --pose ${PROJECT_SOURCE_DIR}/models/pose.onnx
       --manifest ${PROJECT_SOURCE_DIR}/models/manifest.json
+      --policy-manifest ${PROJECT_SOURCE_DIR}/config/rtmpose-cuda-policy.json
       --output ${CMAKE_CURRENT_BINARY_DIR}/hardware-provider-smoke.json
   )
   add_test(NAME squatris-hardware-prerecorded-qualification
@@ -127,6 +128,7 @@ if(SQUATRIS_ENABLE_HARDWARE_TESTS)
       --detector ${PROJECT_SOURCE_DIR}/models/detector.onnx
       --pose ${PROJECT_SOURCE_DIR}/models/pose.onnx
       --manifest ${PROJECT_SOURCE_DIR}/models/manifest.json
+      --policy-manifest ${PROJECT_SOURCE_DIR}/config/rtmpose-cuda-policy.json
       --output ${CMAKE_CURRENT_BINARY_DIR}/hardware-prerecorded-qualification.json
   )
   set_tests_properties(

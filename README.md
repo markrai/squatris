@@ -1,6 +1,6 @@
 # Squatris
 
-Squatris is a Windows-first motion-controlled falling-block game. This repository currently contains the Phase 0A.2 qualification-hardened, game-independent native pose foundation and the Squatris Pose Lab diagnostic application. TITAN qualification is partial because strict CUDA session initialization remains blocked as recorded in [PHASE-0A2-TITAN-QUALIFICATION.md](docs/PHASE-0A2-TITAN-QUALIFICATION.md). The repository does not contain gameplay, gesture recognition, player identity tracking, Godot integration, networking, or cloud inference.
+Squatris is a Windows-first motion-controlled falling-block game. This repository currently contains the Phase 0A.3 audited-CUDA, game-independent native pose foundation and the Squatris Pose Lab diagnostic application. Automated CUDA qualification passes on TITAN; representative footage and human camera observations remain incomplete as recorded in [PHASE-0A3-CUDA-EXECUTION.md](docs/PHASE-0A3-CUDA-EXECUTION.md). The repository does not contain gameplay, gesture recognition, player identity tracking, Godot integration, networking, or cloud inference.
 
 The production path is C++20, OpenCV camera capture, RTMPose through ONNX Runtime, and an explicit CUDA execution provider. CPU inference, synthetic capture, prerecorded capture, and a deterministic mock estimator are available for development and hardware-independent testing.
 
@@ -11,7 +11,7 @@ The production path is C++20, OpenCV camera capture, RTMPose through ONNX Runtim
 - OpenCV Media Foundation, prerecorded, and synthetic frame sources.
 - A bounded latest-frame handoff that drops stale work instead of building a backlog.
 - Frame-synchronized diagnostics, explicit pose freshness, and fail-closed tracking validity.
-- Strict ONNX Runtime CPU or CUDA provider selection.
+- Explicit CPU, strict CUDA, and hash-bound audited CUDA execution policies.
 - YOLOX-tiny person detection and RTMPose-m HALPE-26 inference.
 - Pose Lab camera/skeleton/diagnostic visualization and keyboard controls.
 - Deterministic sequential and paced real-time JSON benchmarks with source/frame evidence, deadlines, report validation, warm-up separation, and latency percentiles.
@@ -45,10 +45,10 @@ $env:SQUATRIS_ONNXRUNTIME_ROOT=(Resolve-Path '.\.deps\onnxruntime\gpu')
 $env:PATH="$(Resolve-Path '.\.deps\cudnn\9.1.0.70\bin');$env:CUDA_PATH\bin;$env:PATH"
 cmake --preset windows-cuda-release
 cmake --build --preset windows-cuda-release
-.\out\build\windows-cuda-release\apps\pose-lab\SquatrisPoseLab.exe --camera 0 --backend rtmpose --provider cuda
+.\out\build\windows-cuda-release\apps\pose-lab\SquatrisPoseLab.exe --camera 0 --backend rtmpose --provider cuda-audited --policy-manifest config\rtmpose-cuda-policy.json --provider-evidence-dir qualification\pose-lab
 ```
 
-CUDA mode fails explicitly if `CUDAExecutionProvider` cannot be registered. Select `--provider cpu` deliberately when CPU behavior is desired.
+CUDA mode fails explicitly if `CUDAExecutionProvider` cannot be registered. `cuda-strict` disables all CPU fallback; `cuda-audited` permits only the exact shape/index assignments in the pinned policy. Select `--provider cpu` deliberately when CPU behavior is desired.
 
 Use `.deps\onnxruntime\gpu` for the GPU package or `.deps\onnxruntime\cpu` for the CPU package. See [BUILDING.md](docs/BUILDING.md), [ARCHITECTURE.md](docs/ARCHITECTURE.md), and [QUALIFICATION.md](docs/QUALIFICATION.md) before running on qualification hardware.
 

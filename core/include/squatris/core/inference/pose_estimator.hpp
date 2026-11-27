@@ -23,8 +23,15 @@ struct InferenceTimings {
   std::chrono::microseconds end_to_end{};
 };
 
+struct PersonDetection {
+  pose::NormalizedImagePoint top_left;
+  pose::NormalizedImagePoint bottom_right;
+  float confidence{};
+};
+
 struct InferenceResult {
   std::optional<pose::PoseFrame> pose;
+  std::optional<PersonDetection> selected_person;
   InferenceTimings timings;
   std::string backend;
   std::string execution_provider;
@@ -37,6 +44,7 @@ public:
   [[nodiscard]] virtual Result<InferenceResult> infer(const input::Frame& frame) = 0;
   [[nodiscard]] virtual std::string backend_name() const = 0;
   [[nodiscard]] virtual std::string execution_provider() const = 0;
+  [[nodiscard]] virtual std::string execution_policy() const = 0;
 };
 
 }

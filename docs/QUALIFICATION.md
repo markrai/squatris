@@ -1,6 +1,6 @@
 # Qualification
 
-Phase 0A.2 TITAN results and the current strict CUDA provider blocker are recorded in [PHASE-0A2-TITAN-QUALIFICATION.md](PHASE-0A2-TITAN-QUALIFICATION.md). The Phase 0A.1 transfer procedure below remains historical preparation context.
+Phase 0A.3 automated CUDA results, the audited provider policy, and the remaining physical blockers are recorded in [PHASE-0A3-CUDA-EXECUTION.md](PHASE-0A3-CUDA-EXECUTION.md). Phase 0A.2 evidence remains in [PHASE-0A2-TITAN-QUALIFICATION.md](PHASE-0A2-TITAN-QUALIFICATION.md). The Phase 0A.1 transfer procedure below is historical preparation context.
 
 ## Status classes
 
@@ -61,23 +61,39 @@ From a PowerShell development shell on TITAN:
 Set-Location C:\dev\project\squatris
 .\scripts\qualify-titan.ps1 `
     -Video 'C:\qualification-inputs\squatris-full-body.mp4' `
-    -OutputDirectory 'C:\qualification-results\squatris-phase0a1' `
+    -OutputDirectory 'C:\qualification-results\squatris-phase0a3' `
     -CameraIndex 0 `
     -WarmupIterations 100 `
     -MeasuredIterations 2000
 if ($LASTEXITCODE -ne 0) { throw 'Automated TITAN qualification failed' }
 ```
 
-The script records OS, CPU, GPU, driver, camera, tool, CUDA, and cuDNN inventory; verifies pinned vcpkg, ONNX Runtime GPU, and model artifacts; performs a strict release build; runs hardware-independent tests; creates an actual strict CUDA session; verifies provider assignment and model hashes; runs and validates a deterministic prerecorded benchmark; probes camera indices and negotiated modes; and writes `qualification-report.json` plus step logs. Its dependency changes are confined to the repository `.deps`, `models`, `out`, and selected report directories.
+The script fails if the host name is not `TITAN`. It records OS, CPU, GPU, driver, camera, tool, CUDA, and cuDNN inventory; verifies per-artifact integrity for pinned CPU and GPU ONNX Runtime packages; performs warnings-as-errors MSVC CPU, CUDA Debug, and CUDA Release builds; runs hardware-independent tests; preserves the expected strict-CUDA failure; verifies audited detector and pose assignments; compares CPU and audited CUDA outputs; runs deterministic, paced, profiled, unprofiled, repeated, and duration-based benchmarks; probes camera indices and negotiated modes; and writes atomic evidence. Child termination, resource subprocesses, and monitoring errors are bounded and recorded.
 
-The script requires `nvidia-smi` to advertise CUDA 12 or newer driver compatibility. The definitive cuDNN 9 compatibility check is successful CUDA session creation and inference with CPU fallback disabled.
+The script requires `nvidia-smi` to advertise CUDA 12 or newer driver compatibility. The definitive cuDNN 9 compatibility check is successful audited CUDA session creation, policy verification, and inference. Strict CUDA remains an expected fail-closed check for the pinned graphs.
 
 ## Physical camera participation
 
 Automated enumeration cannot establish visual correctness. After the script succeeds, a person must run the exact command stored in `qualification-report.json`, normally:
 
 ```powershell
-.\out\build\windows-cuda-release\apps\pose-lab\SquatrisPoseLab.exe --camera 0 --backend rtmpose --provider cuda --detector models\detector.onnx --pose models\pose.onnx
+.\out\build\windows-cuda-release\apps\pose-lab\SquatrisPoseLab.exe `
+    --camera 0 --width 1920 --height 1080 --fps 60 `
+    --backend rtmpose --provider cuda-audited `
+    --detector models\detector.onnx --pose models\pose.onnx `
+    --policy-manifest config\rtmpose-cuda-policy.json `
+    --provider-evidence-dir qualification\pose-lab-1080p
+```
+
+The 720p command is:
+
+```powershell
+.\out\build\windows-cuda-release\apps\pose-lab\SquatrisPoseLab.exe `
+    --camera 0 --width 1280 --height 720 --fps 60 `
+    --backend rtmpose --provider cuda-audited `
+    --detector models\detector.onnx --pose models\pose.onnx `
+    --policy-manifest config\rtmpose-cuda-policy.json `
+    --provider-evidence-dir qualification\pose-lab-720p
 ```
 
 Record these observations separately from automated results:
@@ -94,10 +110,11 @@ Frame-synchronized mode is the default. Press `F` to compare low-latency preview
 ## Acceptance checklist
 
 1. `qualification-report.json` has `passed: true` and every automated step passed.
-2. CUDA benchmark reports contain `CUDAExecutionProvider`, `strict_provider_assignment: true`, and `checksums_verified: true`.
+2. Audited CUDA reports contain `CUDAExecutionProvider+CPUExecutionProvider`, execution policy `cuda-audited`, `strict_provider_assignment: false`, verified model and policy hashes, and no unexpected or unknown provider nodes.
 3. Report validation succeeds and deterministic `frames_skipped` is zero.
 4. Prerecorded frame identifiers and media timestamps match the selected source order.
 5. Camera enumeration records at least one device and its probed negotiated modes.
-6. All physical observations are attached with the human participant, time, device, and outcome.
+6. The five-minute report's measured interval is at least 300 seconds; loop identities are present when footage was intentionally looped.
+7. All physical observations are attached with the human participant, time, device, delivered capture FPS, and outcome.
 
-The future 60 updates/s, 80 ms response, recognition, and duplicate-event targets cannot be marked achieved from mock tests or a short visual smoke test. Player identity and gesture behavior are outside Phase 0A.1.
+The future 60 updates/s, 80 ms response, recognition, and duplicate-event targets cannot be marked achieved from mock tests, numerical CPU/CUDA agreement, a short smoke clip, or looped performance footage. Player identity and gesture behavior remain outside Phase 0A.3.

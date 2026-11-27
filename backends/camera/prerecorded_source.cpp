@@ -114,12 +114,24 @@ void PrerecordedSource::run(const std::stop_token& stop_token) {
   auto rate_start = next_frame;
   std::uint64_t rate_frames{};
   std::uint64_t sequence{};
+  std::uint64_t loop_index{};
+  std::uint64_t frames_in_loop{};
   while (!stop_token.stop_requested()) {
     const auto acquisition_started = pose::Clock::now();
     cv::Mat image;
     if (!capture.read(image) || image.empty()) {
       if (config_.loop) {
-        capture.set(cv::CAP_PROP_POS_FRAMES, 0.0);
+        if (frames_in_loop == 0 || !capture.set(cv::CAP_PROP_POS_FRAMES, 0.0)) {
+          {
+            std::lock_guard lock(state_mutex_);
+            terminal_error_ =
+                Status{ErrorCode::io_error, "Prerecorded video could not restart for looping"};
+          }
+          frames_.close();
+          return;
+        }
+        ++loop_index;
+        frames_in_loop = 0;
         continue;
       }
       {
@@ -131,6 +143,10 @@ void PrerecordedSource::run(const std::stop_token& stop_token) {
     }
     auto frame = std::make_shared<input::Frame>();
     frame->sequence = ++sequence;
+    ++frames_in_loop;
+    if (config_.loop) {
+      frame->source_loop_index = loop_index;
+    }
     const auto source_position = capture.get(cv::CAP_PROP_POS_FRAMES);
     if (std::isfinite(source_position) && source_position >= 1.0) {
       frame->source_frame_index = static_cast<std::uint64_t>(source_position - 1.0);

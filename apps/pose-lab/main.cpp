@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <exception>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <memory>
@@ -18,6 +19,7 @@
 #include <thread>
 #include <vector>
 
+#include <nlohmann/json.hpp>
 #include <opencv2/core.hpp>
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
@@ -30,6 +32,13 @@
 #include "squatris/core/inference/tracking_assessment.hpp"
 #include "squatris/core/metrics/latency_statistics.hpp"
 #include "squatris/core/pose/geometry.hpp"
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace {
 
@@ -48,9 +57,11 @@ struct Options {
   double fps{60.0};
   std::filesystem::path video;
   std::string backend{"rtmpose"};
-  std::string provider{"cuda"};
+  std::string provider{"cuda-audited"};
   std::filesystem::path detector{"models/detector.onnx"};
   std::filesystem::path pose{"models/pose.onnx"};
+  std::filesystem::path policy_manifest{"config/rtmpose-cuda-policy.json"};
+  std::filesystem::path provider_evidence_directory{"qualification/pose-lab"};
   std::uint32_t freshness_ms{250};
   std::size_t maximum_consecutive_failures{3};
 };
@@ -65,6 +76,7 @@ struct SharedState {
   std::uint64_t skipped{};
   std::uint64_t consecutive_failures{};
   double inference_fps{};
+  std::string execution_policy;
 };
 
 std::optional<std::string> value_after(int& index, int argc, char** argv) {
@@ -131,6 +143,10 @@ std::optional<Options> parse_options(int argc, char** argv) {
         options.detector = *value;
       } else if (argument == "--pose") {
         options.pose = *value;
+      } else if (argument == "--policy-manifest") {
+        options.policy_manifest = *value;
+      } else if (argument == "--provider-evidence-dir") {
+        options.provider_evidence_directory = *value;
       } else if (argument != "--camera" && argument != "--width" && argument != "--height" &&
                  argument != "--fps" && argument != "--freshness-ms" &&
                  argument != "--max-inference-failures") {
@@ -151,8 +167,9 @@ void print_help() {
             << "  --list-cameras\n"
             << "  --camera INDEX --width WIDTH --height HEIGHT --fps FPS\n"
             << "  --video PATH | --synthetic\n"
-            << "  --backend rtmpose|mock --provider cuda|cpu\n"
-            << "  --detector PATH --pose PATH\n"
+            << "  --backend rtmpose|mock --provider cpu|cuda-strict|cuda-audited\n"
+            << "  --detector PATH --pose PATH --policy-manifest PATH\n"
+            << "  --provider-evidence-dir PATH\n"
             << "  --freshness-ms N --max-inference-failures N\n"
             << "Keys: Q/Esc exit, S skeleton, D diagnostics, M mirror preview, F sync mode\n";
 }
@@ -184,16 +201,72 @@ make_estimator(const Options& options) {
   squatris::backends::rtmpose::RtmposeConfig config;
   config.detector_model = options.detector;
   config.pose_model = options.pose;
-  if (options.provider == "cuda") {
-    config.provider = squatris::backends::rtmpose::ExecutionProvider::cuda;
+  if (options.provider == "cuda" || options.provider == "cuda-strict") {
+    config.provider = squatris::backends::rtmpose::ExecutionProvider::cuda_strict;
+  } else if (options.provider == "cuda-audited") {
+    config.provider = squatris::backends::rtmpose::ExecutionProvider::cuda_audited;
+    config.provider_policy_manifest = options.policy_manifest;
+    std::error_code directory_error;
+    std::filesystem::create_directories(options.provider_evidence_directory, directory_error);
+    if (directory_error) {
+      return Status{ErrorCode::io_error,
+                    "Could not create provider evidence directory: " + directory_error.message()};
+    }
+    config.profiling_output_prefix =
+        options.provider_evidence_directory / "pose-lab-provider-audit";
   } else if (options.provider == "cpu") {
     config.provider = squatris::backends::rtmpose::ExecutionProvider::cpu;
   } else {
-    return Status{ErrorCode::invalid_argument, "Provider must be cuda or cpu"};
+    return Status{ErrorCode::invalid_argument,
+                  "Provider must be cpu, cuda-strict, or cuda-audited"};
   }
   auto estimator = squatris::backends::rtmpose::RtmposeEstimator::create(config);
   if (!estimator) {
     return estimator.error();
+  }
+  if (config.provider == squatris::backends::rtmpose::ExecutionProvider::cuda_audited) {
+    const auto evidence = estimator.value()->provider_policy_evidence();
+    if (!evidence) {
+      return evidence.error();
+    }
+    const auto output = options.provider_evidence_directory / "pose-lab-provider-evidence.json";
+    const auto temporary = output.string() + ".tmp." +
+                           std::to_string(std::chrono::steady_clock::now()
+                                              .time_since_epoch()
+                                              .count());
+    const auto remove_temporary = [&] {
+      std::error_code ignored;
+      std::filesystem::remove(temporary, ignored);
+    };
+    {
+      std::ofstream stream(temporary, std::ios::binary | std::ios::trunc);
+      if (!stream) {
+        remove_temporary();
+        return Status{ErrorCode::io_error, "Could not create Pose Lab provider evidence"};
+      }
+      stream << evidence.value().dump(2) << '\n';
+      stream.flush();
+      if (!stream) {
+        stream.close();
+        remove_temporary();
+        return Status{ErrorCode::io_error, "Could not write Pose Lab provider evidence"};
+      }
+    }
+#ifdef _WIN32
+    if (!MoveFileExW(std::filesystem::path(temporary).c_str(), output.c_str(),
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+      remove_temporary();
+      return Status{ErrorCode::io_error, "Could not atomically publish Pose Lab provider evidence"};
+    }
+#else
+    std::error_code replace_error;
+    std::filesystem::rename(temporary, output, replace_error);
+    if (replace_error) {
+      remove_temporary();
+      return Status{ErrorCode::io_error, "Could not atomically publish Pose Lab provider evidence"};
+    }
+#endif
+    std::cout << "Verified cuda-audited provider policy; evidence: " << output << '\n';
   }
   return std::unique_ptr<squatris::inference::IPoseEstimator>(estimator.take_value().release());
 }
@@ -297,8 +370,8 @@ void draw_diagnostics(cv::Mat& image, const squatris::input::CaptureFormat& form
                 << " ms  " << (tracking.sequence_matches ? "matched" : "mismatched");
   lines.push_back(tracking_line.str());
   if (inference) {
-    lines.push_back("backend: " + inference->backend +
-                    "  provider: " + inference->execution_provider);
+    lines.push_back("backend: " + inference->backend + "  provider: " +
+                    inference->execution_provider + "  policy: " + state.execution_policy);
     std::ostringstream timing;
     timing << std::fixed << std::setprecision(2) << "acquire "
            << static_cast<double>(inference->timings.frame_acquisition.count()) / 1000.0
@@ -441,6 +514,7 @@ int run_pose_lab(int argc, char** argv) {
     return 1;
   }
   SharedState state;
+  state.execution_policy = estimator.value()->execution_policy();
   std::jthread inference_worker([&](const std::stop_token& stop_token) {
     try {
       inference_loop(stop_token, *source, *estimator.value(), state,

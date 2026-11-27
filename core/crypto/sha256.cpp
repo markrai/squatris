@@ -1,4 +1,4 @@
-#include "sha256.hpp"
+#include "squatris/core/crypto/sha256.hpp"
 
 #include <array>
 #include <cstdint>
@@ -13,7 +13,7 @@
 #include <bcrypt.h>
 #endif
 
-namespace squatris::tools {
+namespace squatris::crypto {
 
 Result<std::string> sha256_file(const std::filesystem::path& path) {
 #ifdef _WIN32
@@ -47,7 +47,7 @@ Result<std::string> sha256_file(const std::filesystem::path& path) {
   std::ifstream stream(path, std::ios::binary);
   if (!stream) {
     close();
-    return Status{ErrorCode::not_found, "File could not be opened for SHA-256"};
+    return Status{ErrorCode::not_found, "File could not be opened for SHA-256: " + path.string()};
   }
   std::array<char, 1 << 16> buffer{};
   while (stream) {

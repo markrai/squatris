@@ -37,6 +37,8 @@ Result<squatris::inference::InferenceResult> MockPoseEstimator::infer(const inpu
   output.inference_completed_at = pose::Clock::now();
   squatris::inference::InferenceResult result;
   result.pose = std::move(output);
+  result.selected_person =
+      squatris::inference::PersonDetection{{0.25F, 0.10F}, {0.75F, 0.98F}, 0.99F};
   result.backend = backend_name();
   result.execution_provider = execution_provider();
   result.person_detected = true;
@@ -51,5 +53,7 @@ Result<squatris::inference::InferenceResult> MockPoseEstimator::infer(const inpu
 std::string MockPoseEstimator::backend_name() const { return "mock-pose-v1"; }
 
 std::string MockPoseEstimator::execution_provider() const { return "deterministic-cpu"; }
+
+std::string MockPoseEstimator::execution_policy() const { return "cpu"; }
 
 }

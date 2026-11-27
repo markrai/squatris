@@ -10,6 +10,7 @@ public:
   infer(const input::Frame& frame) override;
   [[nodiscard]] std::string backend_name() const override;
   [[nodiscard]] std::string execution_provider() const override;
+  [[nodiscard]] std::string execution_policy() const override;
 };
 
 }

@@ -1,0 +1,185 @@
+{
+  "schema_version": 1,
+  "policy_id": "squatris-ort-1.20.1-cuda-audited-v1",
+  "runtime_version": "1.20.1",
+  "graph_optimization_level": "ORT_ENABLE_ALL",
+  "execution_mode": "ORT_SEQUENTIAL",
+  "sessions": {
+    "detector": {
+      "model_sha256": "ceb11c07298f95c50d7c5abeb906d03340c85f23aa79e3e66966e7fb6c307250",
+      "expected_optimized_node_count": 262,
+      "expected_cuda_node_count": 258,
+      "static_graph": {
+        "ir_version": 6,
+        "onnx_opset": 11,
+        "original_node_count": 336,
+        "control_flow_nodes": []
+      },
+      "required_cuda_nodes": [
+        {
+          "name": "Conv_31",
+          "operator": "Conv",
+          "node_index": "3"
+        },
+        {
+          "name": "Conv_287",
+          "operator": "Conv",
+          "node_index": "258"
+        },
+        {
+          "name": "NonMaxSuppression_490",
+          "operator": "NonMaxSuppression",
+          "node_index": "311"
+        }
+      ],
+      "approved_cpu_nodes": [
+        {
+          "name": "Gather_523",
+          "operator": "Gather",
+          "node_index": "328",
+          "domain": "ai.onnx",
+          "classification": "shape-indexing",
+          "input_type_shape": [
+            { "int64": [2] },
+            { "int64": [] }
+          ],
+          "output_type_shape": [
+            { "int64": [] }
+          ],
+          "approximate_input_bytes": 24,
+          "approximate_output_bytes": 8,
+          "justification": "Reads a scalar extent from the two-element Shape_522 result used to bound TopK output selection.",
+          "memory_transfer": "Shape_522 produces CPU shape metadata; no explicit copy event was observed."
+        },
+        {
+          "name": "Less_526",
+          "operator": "Less",
+          "node_index": "329",
+          "domain": "ai.onnx",
+          "classification": "shape-bound-calculation",
+          "input_type_shape": [
+            { "int64": [] },
+            { "int64": [] }
+          ],
+          "output_type_shape": [
+            { "bool": [] }
+          ],
+          "approximate_input_bytes": 16,
+          "approximate_output_bytes": 1,
+          "justification": "Compares the requested TopK bound with the scalar candidate count.",
+          "memory_transfer": "Consumes CPU scalar metadata and a one-element initializer; no explicit copy event was observed."
+        },
+        {
+          "name": "Where_527",
+          "operator": "Where",
+          "node_index": "330",
+          "domain": "ai.onnx",
+          "classification": "shape-bound-calculation",
+          "input_type_shape": [
+            { "bool": [] },
+            { "int64": [] },
+            { "int64": [] }
+          ],
+          "output_type_shape": [
+            { "int64": [] }
+          ],
+          "approximate_input_bytes": 17,
+          "approximate_output_bytes": 8,
+          "justification": "Selects the scalar TopK count after the bound comparison.",
+          "memory_transfer": "All inputs and output are CPU scalar metadata; no explicit copy event was observed."
+        },
+        {
+          "name": "Reshape_528",
+          "operator": "Reshape",
+          "node_index": "331",
+          "domain": "ai.onnx",
+          "classification": "shape-metadata-manipulation",
+          "input_type_shape": [
+            { "int64": [] },
+            { "int64": [1] }
+          ],
+          "output_type_shape": [
+            { "int64": [1] }
+          ],
+          "approximate_input_bytes": 16,
+          "approximate_output_bytes": 8,
+          "justification": "Converts the scalar TopK count to the one-element tensor required by TopK.",
+          "memory_transfer": "Produces a CPU one-element shape tensor consumed as a CPU input by the CUDA TopK kernel."
+        }
+      ]
+    },
+    "pose": {
+      "model_sha256": "26f3a19e61304a600dfb82d1001d41d24343b89fc70a33ffc84657e0b0bf2ecf",
+      "expected_optimized_node_count": 187,
+      "expected_cuda_node_count": 185,
+      "static_graph": {
+        "ir_version": 6,
+        "onnx_opset": 11,
+        "original_node_count": 247,
+        "control_flow_nodes": []
+      },
+      "required_cuda_nodes": [
+        {
+          "name": "Conv_0",
+          "operator": "Conv",
+          "node_index": "0"
+        },
+        {
+          "name": "Conv_205",
+          "operator": "Conv",
+          "node_index": "205"
+        },
+        {
+          "name": "MatMul_221",
+          "operator": "MatMul",
+          "node_index": "217"
+        },
+        {
+          "name": "MatMul_252",
+          "operator": "MatMul",
+          "node_index": "246"
+        }
+      ],
+      "approved_cpu_nodes": [
+        {
+          "name": "Slice_209",
+          "operator": "Slice",
+          "node_index": "207",
+          "domain": "ai.onnx",
+          "classification": "shape-metadata-manipulation",
+          "input_type_shape": [
+            { "int64": [4] },
+            { "int64": [1] },
+            { "int64": [1] },
+            { "int64": [1] }
+          ],
+          "output_type_shape": [
+            { "int64": [2] }
+          ],
+          "approximate_input_bytes": 56,
+          "approximate_output_bytes": 16,
+          "justification": "Slices the spatial dimensions from the four-element Shape_206 result for SimCC head reshaping.",
+          "memory_transfer": "Shape_206 produces CPU shape metadata; no explicit copy event was observed."
+        },
+        {
+          "name": "Concat_211",
+          "operator": "Concat",
+          "node_index": "208",
+          "domain": "ai.onnx",
+          "classification": "shape-metadata-manipulation",
+          "input_type_shape": [
+            { "int64": [2] },
+            { "int64": [1] }
+          ],
+          "output_type_shape": [
+            { "int64": [3] }
+          ],
+          "approximate_input_bytes": 24,
+          "approximate_output_bytes": 24,
+          "justification": "Builds the three-element shape tensor consumed by the CUDA Reshape_212 node.",
+          "memory_transfer": "Produces a CPU shape tensor consumed as a CPU input by the CUDA Reshape kernel."
+        }
+      ]
+    }
+  }
+}

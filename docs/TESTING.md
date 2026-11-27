@@ -19,8 +19,8 @@ The suite covers:
 - Single-use source lifecycle and worker-exception translation.
 - Person detection versus usable pose, frame mismatch, freshness, capture stall, source failure, and deterministic inference-failure invalidation.
 - Exact in-order sequential acquisition with source indices and timestamps.
-- Deterministic and real-time benchmark execution plus schema-3 report validation.
-- Rejection of corrupted frame ordering, phase counts, timing counts, hashes, terminal errors, and success invariants.
+- Deterministic, real-time, duration, and loop-identity benchmark execution plus schema-4 report validation.
+- Rejection of corrupted frame ordering, phase counts, provider/policy identities, profile hashes, node assignments, aggregate statistics, terminal errors, and success invariants.
 - Valid machine-readable benchmark reports for initialization failures.
 - Pinned RTMPose preprocessing and SimCC reference fixtures.
 
@@ -46,7 +46,7 @@ Live-camera behavior remains a visual/manual check:
 
 ```powershell
 .\out\build\windows-cuda-release\apps\pose-lab\SquatrisPoseLab.exe --list-cameras
-.\out\build\windows-cuda-release\apps\pose-lab\SquatrisPoseLab.exe --camera 0 --backend rtmpose --provider cuda
+.\out\build\windows-cuda-release\apps\pose-lab\SquatrisPoseLab.exe --camera 0 --backend rtmpose --provider cuda-audited --policy-manifest config\rtmpose-cuda-policy.json --provider-evidence-dir qualification\pose-lab
 ```
 
 A passing mock or CPU test does not imply that cameras, CUDA, TITAN performance, or physical poses work. Qualification evidence belongs in validated benchmark reports and the machine-readable procedure in `QUALIFICATION.md`.

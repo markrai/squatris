@@ -36,6 +36,18 @@ string(JSON corrupted SET "${corrupted}" model detector_sha256 "\"bad\"")
 expect_rejected(model-hash "${corrupted}")
 
 set(corrupted "${valid_report}")
+string(JSON corrupted SET "${corrupted}" model execution_provider "\"unknown\"")
+expect_rejected(provider-identity "${corrupted}")
+
+set(corrupted "${valid_report}")
+string(JSON corrupted SET "${corrupted}" model execution_policy "\"cuda-audited\"")
+expect_rejected(policy-identity "${corrupted}")
+
+set(corrupted "${valid_report}")
+string(JSON corrupted SET "${corrupted}" measured timings estimator_end_to_end median_ms 999999)
+expect_rejected(timing-aggregate "${corrupted}")
+
+set(corrupted "${valid_report}")
 string(JSON corrupted SET "${corrupted}" status error_count 1)
 expect_rejected(success-invariant "${corrupted}")
 

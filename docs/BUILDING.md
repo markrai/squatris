@@ -1,6 +1,6 @@
 # Building
 
-## Supported Phase 0A.2 host
+## Supported Phase 0A.3 host
 
 The intended host is Windows 11 x64 with MSVC and the Windows SDK. CMake 3.28 or newer and Ninja are required. Visual Studio's bundled CMake and Ninja are sufficient when their directories are added to `PATH`, or when commands are invoked by absolute path. Run configure and build commands inside an x64 Visual Studio developer shell so MSVC's standard-library and SDK paths are available.
 
@@ -51,16 +51,18 @@ $env:SQUATRIS_ONNXRUNTIME_ROOT=(Resolve-Path '.\.deps\onnxruntime\gpu')
 $env:PATH="$(Resolve-Path '.\.deps\cudnn\9.1.0.70\bin');$env:CUDA_PATH\bin;$env:PATH"
 cmake --preset windows-cuda-release
 cmake --build --preset windows-cuda-release
+cmake --preset windows-cuda-debug
+cmake --build --preset windows-cuda-debug
 ```
 
-The GPU NuGet package is pinned by SHA-512. All ONNX Runtime native DLLs are copied beside built executables. CUDA 12 and cuDNN 9 DLL discovery uses only the process-local `PATH` shown above. A CUDA session continues to fail closed when any graph node would require the default CPU execution provider.
+Both NuGet packages are pinned by SHA-512, and every required installed header, import library, runtime DLL, and provider DLL is verified by SHA-256 and length. All ONNX Runtime native DLLs are copied beside built executables. CUDA 12 and cuDNN 9 DLL discovery uses only the process-local `PATH` shown above. `cuda-strict` fails when any graph node requires CPU; `cuda-audited` fails unless the exact pinned mixed-provider policy is reproduced.
 
 ## Models and Pose Lab
 
 ```powershell
 .\scripts\acquire-models.ps1
 .\out\build\windows-cuda-release\apps\pose-lab\SquatrisPoseLab.exe --list-cameras
-.\out\build\windows-cuda-release\apps\pose-lab\SquatrisPoseLab.exe --camera 0 --width 1920 --height 1080 --fps 60 --backend rtmpose --provider cuda --detector models\detector.onnx --pose models\pose.onnx
+.\out\build\windows-cuda-release\apps\pose-lab\SquatrisPoseLab.exe --camera 0 --width 1920 --height 1080 --fps 60 --backend rtmpose --provider cuda-audited --detector models\detector.onnx --pose models\pose.onnx --policy-manifest config\rtmpose-cuda-policy.json --provider-evidence-dir qualification\pose-lab
 ```
 
 Camera requests are preferences. Pose Lab reports the actual width, height, backend, encoding, configured capture rate, and measured delivery rate. Frame-synchronized diagnostics are the default. `--freshness-ms` controls pose and capture freshness, while `--max-inference-failures` bounds persistent failures.

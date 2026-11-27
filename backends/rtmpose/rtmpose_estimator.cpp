@@ -14,10 +14,12 @@
 #include <utility>
 #include <vector>
 
+#include <nlohmann/json.hpp>
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 
 #include "squatris/backends/rtmpose/model_math.hpp"
+#include "squatris/core/crypto/sha256.hpp"
 #include "squatris/core/pose/mapping.hpp"
 
 #if SQUATRIS_HAS_ONNXRUNTIME
@@ -138,8 +140,10 @@ ModelNames output_names(const Ort::Session& session, Ort::AllocatorWithDefaultOp
   return names;
 }
 
-Ort::Env make_environment() {
-  Ort::Env environment(ORT_LOGGING_LEVEL_WARNING, "squatris");
+Ort::Env make_environment(bool verbose_provider_diagnostics) {
+  const auto severity =
+      verbose_provider_diagnostics ? ORT_LOGGING_LEVEL_VERBOSE : ORT_LOGGING_LEVEL_WARNING;
+  Ort::Env environment(severity, "squatris");
   environment.DisableTelemetryEvents();
   return environment;
 }
@@ -151,6 +155,14 @@ std::filesystem::path profiling_prefix(const RtmposeConfig& config, std::string_
   return config.profiling_output_prefix.string() + "-" + std::string(session);
 }
 
+std::filesystem::path production_profiling_prefix(const RtmposeConfig& config,
+                                                  std::string_view session) {
+  if (config.production_profiling_output_prefix.empty()) {
+    return {};
+  }
+  return config.production_profiling_output_prefix.string() + "-" + std::string(session);
+}
+
 Ort::SessionOptions session_options(ExecutionProvider provider, int device_id,
                                     const std::filesystem::path& profile_prefix) {
   Ort::SessionOptions options;
@@ -159,8 +171,10 @@ Ort::SessionOptions session_options(ExecutionProvider provider, int device_id,
   if (!profile_prefix.empty()) {
     options.EnableProfiling(profile_prefix.c_str());
   }
-  if (provider == ExecutionProvider::cuda) {
-    options.AddConfigEntry("session.disable_cpu_ep_fallback", "1");
+  if (provider != ExecutionProvider::cpu) {
+    if (provider == ExecutionProvider::cuda_strict) {
+      options.AddConfigEntry("session.disable_cpu_ep_fallback", "1");
+    }
 #if SQUATRIS_ORT_HAS_CUDA
     OrtCUDAProviderOptions cuda_options;
     cuda_options.device_id = device_id;
@@ -250,7 +264,8 @@ cv::Mat affine_pose_crop(const cv::Mat& source, const BoundingBox& box, cv::Poin
 
 struct RtmposeEstimator::Impl {
   explicit Impl(RtmposeConfig source_config)
-      : config(std::move(source_config)), environment(make_environment()),
+      : config(std::move(source_config)),
+        environment(make_environment(config.verbose_provider_diagnostics)),
         detector(make_session(environment, config.detector_model,
                               session_options(config.provider, config.cuda_device_id,
                                               profiling_prefix(config, "detector")),
@@ -264,6 +279,96 @@ struct RtmposeEstimator::Impl {
         pose_inputs(input_names(pose, allocator)), pose_outputs(output_names(pose, allocator)) {
     validate_model_contracts(detector, detector_inputs, detector_outputs, pose, pose_inputs,
                              pose_outputs);
+    if (config.provider == ExecutionProvider::cuda_audited) {
+      verify_audited_policy();
+      recreate_production_sessions();
+    }
+  }
+
+  void run_preflight(Ort::Session& session, const ModelNames& inputs, const ModelNames& outputs,
+                     std::span<const std::int64_t> shape) {
+    std::size_t element_count{1};
+    for (const auto dimension : shape) {
+      element_count *= static_cast<std::size_t>(dimension);
+    }
+    std::vector<float> data(element_count);
+    auto memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+    auto tensor = Ort::Value::CreateTensor<float>(memory, data.data(), data.size(), shape.data(),
+                                                  shape.size());
+    auto values = session.Run(Ort::RunOptions{nullptr}, inputs.values.data(), &tensor, 1,
+                              outputs.values.data(), outputs.values.size());
+    if (values.size() != outputs.values.size()) {
+      throw std::runtime_error("Provider preflight returned an unexpected output count");
+    }
+  }
+
+  std::vector<ProviderProfile> end_profiling() {
+    if (profiles.has_value()) {
+      return *profiles;
+    }
+    const auto detector_path = detector.EndProfilingAllocated(allocator);
+    const auto pose_path = pose.EndProfilingAllocated(allocator);
+    profiles =
+        std::vector<ProviderProfile>{{"detector", std::filesystem::path(detector_path.get())},
+                                     {"pose", std::filesystem::path(pose_path.get())}};
+    return *profiles;
+  }
+
+  void verify_audited_policy() {
+    if (config.profiling_output_prefix.empty() || config.provider_policy_manifest.empty()) {
+      throw std::runtime_error(
+          "cuda-audited requires a provider policy manifest and profiling output prefix");
+    }
+    constexpr std::array<std::int64_t, 4> detector_shape{1, 3, detector_height, detector_width};
+    constexpr std::array<std::int64_t, 4> pose_shape{1, 3, pose_height, pose_width};
+    run_preflight(detector, detector_inputs, detector_outputs, detector_shape);
+    run_preflight(pose, pose_inputs, pose_outputs, pose_shape);
+    const auto detector_hash = crypto::sha256_file(config.detector_model);
+    const auto pose_hash = crypto::sha256_file(config.pose_model);
+    if (!detector_hash || !pose_hash) {
+      throw std::runtime_error(detector_hash ? pose_hash.error().message
+                                             : detector_hash.error().message);
+    }
+    const auto evidence = analyze_provider_profiles(
+        end_profiling(), config.provider_policy_manifest, detector_hash.value(), pose_hash.value(),
+        SQUATRIS_ONNXRUNTIME_VERSION);
+    if (!evidence) {
+      throw std::runtime_error(evidence.error().message);
+    }
+    if (!evidence.value().at("verified").get<bool>()) {
+      throw std::runtime_error("cuda-audited provider policy verification failed: " +
+                               evidence.value().at("verification_errors").dump());
+    }
+    policy_evidence = evidence.value();
+  }
+
+  void recreate_production_sessions() {
+    detector = make_session(environment, config.detector_model,
+                            session_options(config.provider, config.cuda_device_id,
+                                            production_profiling_prefix(config, "detector")),
+                            "detector production");
+    pose = make_session(environment, config.pose_model,
+                        session_options(config.provider, config.cuda_device_id,
+                                        production_profiling_prefix(config, "pose")),
+                        "pose production");
+    detector_inputs = input_names(detector, allocator);
+    detector_outputs = output_names(detector, allocator);
+    pose_inputs = input_names(pose, allocator);
+    pose_outputs = output_names(pose, allocator);
+    validate_model_contracts(detector, detector_inputs, detector_outputs, pose, pose_inputs,
+                             pose_outputs);
+  }
+
+  std::vector<ProviderProfile> end_production_profiling() {
+    if (production_profiles.has_value()) {
+      return *production_profiles;
+    }
+    const auto detector_path = detector.EndProfilingAllocated(allocator);
+    const auto pose_path = pose.EndProfilingAllocated(allocator);
+    production_profiles =
+        std::vector<ProviderProfile>{{"detector", std::filesystem::path(detector_path.get())},
+                                     {"pose", std::filesystem::path(pose_path.get())}};
+    return *production_profiles;
   }
 
   RtmposeConfig config;
@@ -276,6 +381,8 @@ struct RtmposeEstimator::Impl {
   ModelNames pose_inputs;
   ModelNames pose_outputs;
   std::optional<std::vector<ProviderProfile>> profiles;
+  std::optional<std::vector<ProviderProfile>> production_profiles;
+  std::optional<nlohmann::json> policy_evidence;
 };
 
 #else
@@ -303,7 +410,7 @@ Result<std::unique_ptr<RtmposeEstimator>> RtmposeEstimator::create(const Rtmpose
     return Status{ErrorCode::invalid_argument, "RTMPose thresholds must be in [0, 1]"};
   }
   const auto expected =
-      config.provider == ExecutionProvider::cuda ? "CUDAExecutionProvider" : "CPUExecutionProvider";
+      config.provider != ExecutionProvider::cpu ? "CUDAExecutionProvider" : "CPUExecutionProvider";
   if (!provider_available(expected)) {
     return Status{ErrorCode::unavailable,
                   std::string("Requested ONNX Runtime provider is unavailable: ") + expected};
@@ -415,6 +522,12 @@ Result<squatris::inference::InferenceResult> RtmposeEstimator::infer(const input
       return result;
     }
     result.person_detected = true;
+    result.selected_person =
+        squatris::inference::PersonDetection{{selected->left / static_cast<float>(frame.width),
+                                              selected->top / static_cast<float>(frame.height)},
+                                             {selected->right / static_cast<float>(frame.width),
+                                              selected->bottom / static_cast<float>(frame.height)},
+                                             selected->score};
 
     const auto preprocessing_started = pose::Clock::now();
     cv::Point2f center;
@@ -521,8 +634,29 @@ std::string RtmposeEstimator::backend_name() const { return "rtmpose-m-halpe26-2
 std::string RtmposeEstimator::execution_provider() const {
 #if SQUATRIS_HAS_ONNXRUNTIME
   if (implementation_) {
-    return implementation_->config.provider == ExecutionProvider::cuda ? "CUDAExecutionProvider"
-                                                                       : "CPUExecutionProvider";
+    if (implementation_->config.provider == ExecutionProvider::cuda_strict) {
+      return "CUDAExecutionProvider";
+    }
+    if (implementation_->config.provider == ExecutionProvider::cuda_audited) {
+      return "CUDAExecutionProvider+CPUExecutionProvider";
+    }
+    return "CPUExecutionProvider";
+  }
+#endif
+  return "unavailable";
+}
+
+std::string RtmposeEstimator::execution_policy() const {
+#if SQUATRIS_HAS_ONNXRUNTIME
+  if (implementation_) {
+    switch (implementation_->config.provider) {
+    case ExecutionProvider::cpu:
+      return "cpu";
+    case ExecutionProvider::cuda_strict:
+      return "cuda-strict";
+    case ExecutionProvider::cuda_audited:
+      return "cuda-audited";
+    }
   }
 #endif
   return "unavailable";
@@ -540,18 +674,45 @@ Result<std::vector<ProviderProfile>> RtmposeEstimator::finalize_provider_profili
     return *implementation_->profiles;
   }
   try {
-    std::vector<ProviderProfile> profiles;
-    const auto detector =
-        implementation_->detector.EndProfilingAllocated(implementation_->allocator);
-    const auto pose = implementation_->pose.EndProfilingAllocated(implementation_->allocator);
-    profiles.push_back({"detector", std::filesystem::path(detector.get())});
-    profiles.push_back({"pose", std::filesystem::path(pose.get())});
-    implementation_->profiles = profiles;
-    return profiles;
+    return implementation_->end_profiling();
   } catch (const Ort::Exception& exception) {
     return Status{ErrorCode::io_error,
                   "Could not finalize ONNX Runtime profiling: " + std::string(exception.what())};
   }
+#else
+  return Status{ErrorCode::unavailable, "RTMPose backend is not compiled"};
+#endif
+}
+
+Result<std::vector<ProviderProfile>> RtmposeEstimator::finalize_production_profiling() {
+#if SQUATRIS_HAS_ONNXRUNTIME
+  if (!implementation_) {
+    return Status{ErrorCode::initialization_failed, "RTMPose backend is not initialized"};
+  }
+  if (implementation_->config.provider != ExecutionProvider::cuda_audited ||
+      implementation_->config.production_profiling_output_prefix.empty()) {
+    return Status{ErrorCode::invalid_argument, "Audited CUDA production profiling was not enabled"};
+  }
+  try {
+    return implementation_->end_production_profiling();
+  } catch (const Ort::Exception& exception) {
+    return Status{ErrorCode::io_error, "Could not finalize ONNX Runtime production profiling: " +
+                                           std::string(exception.what())};
+  }
+#else
+  return Status{ErrorCode::unavailable, "RTMPose backend is not compiled"};
+#endif
+}
+
+Result<nlohmann::json> RtmposeEstimator::provider_policy_evidence() const {
+#if SQUATRIS_HAS_ONNXRUNTIME
+  if (!implementation_) {
+    return Status{ErrorCode::initialization_failed, "RTMPose backend is not initialized"};
+  }
+  if (!implementation_->policy_evidence.has_value()) {
+    return Status{ErrorCode::invalid_argument, "No audited provider policy evidence is available"};
+  }
+  return *implementation_->policy_evidence;
 #else
   return Status{ErrorCode::unavailable, "RTMPose backend is not compiled"};
 #endif

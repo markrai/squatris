@@ -28,7 +28,7 @@ Left and right always mean the subject's anatomical left and right. A mirrored p
 
 Capture timestamps use `std::chrono::steady_clock` after a frame has been copied into its owned buffer at the capture boundary. Acquisition duration covers the blocking read or synthetic generation through completion of that copy. Inference completion timestamps use the same clock after postprocessing. They are suitable for durations and ordering, not wall-clock correlation. Frame sequence identifiers are monotonic within one source start.
 
-Prerecorded and deterministic synthetic frames also retain a source-frame index and source-media timestamp. Those fields identify benchmark inputs; they do not replace the steady-clock timestamps used for latency.
+Prerecorded and deterministic synthetic frames also retain a source-frame index and source-media timestamp. Explicitly looped prerecorded performance sources additionally retain a zero-based loop identity. Source indices and media timestamps may reset only when the loop identity advances. These fields identify benchmark inputs; they do not replace the steady-clock timestamps used for latency.
 
 Confidence values are model outputs normalized to `[0, 1]`. They are not calibrated probabilities and are not comparable between arbitrary models. Non-finite or out-of-range confidence is rejected. Missing landmarks contain no coordinates, depth, or confidence.
 
@@ -41,6 +41,14 @@ Pose Lab owns one inference thread and the UI thread. The inference thread waits
 Pose Lab starts in frame-synchronized diagnostic mode. The inference result retains shared ownership of the exact immutable frame that produced it, and the UI draws its skeleton only on that frame. Low-latency mode displays the latest capture, but suppresses the skeleton when the pose and display sequences differ. Diagnostics always show both sequence identifiers, match state, and pose age.
 
 ONNX Runtime sessions belong exclusively to the estimator. Pose Lab calls an estimator from only its inference thread. The benchmark calls it serially from the main thread.
+
+## ONNX Runtime execution policies
+
+The RTMPose backend exposes three policies. `cpu` intentionally creates CPU sessions. `cuda-strict` appends the CUDA provider and sets `session.disable_cpu_ep_fallback=1`; it fails if any optimized node requires the default CPU provider. `cuda-audited` appends CUDA and CPU providers but accepts CPU assignment only through the pinned, hash-bound provider policy manifest.
+
+Audited creation first builds dedicated profiling sessions for detector and pose. Each session executes a fixed-shape preflight before any production pose can be emitted. The analyzer hashes both models and both profile artifacts, verifies ONNX Runtime `1.20.1`, `ORT_ENABLE_ALL`, `ORT_SEQUENTIAL`, stable node identities, exact optimized node counts, all required CUDA neural-compute nodes, and the exact CPU shape/index allowlist. Unknown providers, missing CUDA nodes, missing or additional CPU nodes, modified profiles, model mismatch, or policy mismatch fail initialization. Pose Lab and the benchmark then create separate production sessions with identical runtime configuration. Production profiling is disabled unless a bounded diagnostic benchmark explicitly requests it.
+
+The policy distinguishes complete straight-line assignment evidence from observed execution evidence. Both pinned graphs have no control-flow nodes, and the preflight profile contains the exact expected optimized-node inventory. Execution counts and durations prove only the observed preflight run. The implementation does not generalize the allowlist to operator types or other model hashes.
 
 Synchronization occurs at the latest-frame buffer, the source statistics/error state, and Pose Lab's latest-inference snapshot. No communication queue is unbounded.
 
@@ -72,4 +80,4 @@ Initialization, model loading, and warm-up are excluded from measured benchmark 
 
 Deterministic benchmarks use a synchronous sequential source and cannot skip or loop frames. Real-time simulation uses paced capture and the one-slot latest-frame contract, so sequence gaps measure realistic skipped input. Both modes are deadline- and failure-bounded.
 
-RTMPose session creation validates the pinned input/output names, tensor ranks, and element types. Each inference validates exact detector and HALPE-26 SimCC dimensions and element counts before reading tensor memory. CUDA sessions disable CPU execution-provider fallback.
+RTMPose session creation validates the pinned input/output names, tensor ranks, and element types. Each inference validates exact detector and HALPE-26 SimCC dimensions and element counts before reading tensor memory. Strict CUDA sessions disable CPU fallback; audited CUDA sessions enforce the pinned mixed-provider policy before separate production sessions are exposed.
