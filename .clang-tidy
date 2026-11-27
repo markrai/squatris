@@ -1,0 +1,21 @@
+Checks: >
+  -*,
+  clang-analyzer-*,
+  bugprone-branch-clone,
+  bugprone-dangling-handle,
+  bugprone-exception-escape,
+  bugprone-infinite-loop,
+  bugprone-misplaced-widening-cast,
+  bugprone-narrowing-conversions,
+  bugprone-sizeof-expression,
+  bugprone-suspicious-*,
+  bugprone-unchecked-optional-access,
+  concurrency-*,
+  performance-*,
+  portability-*
+WarningsAsErrors: '*'
+HeaderFilterRegex: '^(core|backends|apps|tools|tests)[/\\]'
+FormatStyle: file
+ExtraArgs:
+  - '-fexceptions'
+  - '-fcxx-exceptions'

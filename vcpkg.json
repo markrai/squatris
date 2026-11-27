@@ -1,0 +1,14 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "squatris",
+  "version-semver": "0.1.0",
+  "dependencies": [
+    "gtest",
+    "nlohmann-json",
+    {
+      "name": "opencv4",
+      "default-features": false,
+      "features": ["ffmpeg", "highgui", "msmf"]
+    }
+  ]
+}

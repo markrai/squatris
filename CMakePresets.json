@@ -1,0 +1,75 @@
+{
+  "version": 8,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 28,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "installDir": "${sourceDir}/out/install/${presetName}",
+      "cacheVariables": {
+        "CMAKE_CXX_STANDARD": "20",
+        "CMAKE_CXX_STANDARD_REQUIRED": "ON",
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_MANIFEST_MODE": "ON"
+      }
+    },
+    {
+      "name": "windows-debug",
+      "inherits": "base",
+      "displayName": "Windows Debug (CPU)",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "SQUATRIS_ENABLE_ONNXRUNTIME": "OFF"
+      }
+    },
+    {
+      "name": "windows-release",
+      "inherits": "base",
+      "displayName": "Windows Release (CPU)",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "SQUATRIS_ENABLE_ONNXRUNTIME": "OFF",
+        "SQUATRIS_WARNINGS_AS_ERRORS": "ON"
+      }
+    },
+    {
+      "name": "windows-cuda-release",
+      "inherits": "base",
+      "displayName": "Windows Release (ONNX Runtime CPU/CUDA)",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "SQUATRIS_ENABLE_ONNXRUNTIME": "ON",
+        "SQUATRIS_ONNXRUNTIME_ROOT": "$env{SQUATRIS_ONNXRUNTIME_ROOT}"
+      }
+    }
+  ],
+  "buildPresets": [
+    {"name": "windows-debug", "configurePreset": "windows-debug"},
+    {"name": "windows-release", "configurePreset": "windows-release"},
+    {"name": "windows-cuda-release", "configurePreset": "windows-cuda-release"}
+  ],
+  "testPresets": [
+    {
+      "name": "windows-debug",
+      "configurePreset": "windows-debug",
+      "output": {"outputOnFailure": true}
+    },
+    {
+      "name": "windows-release",
+      "configurePreset": "windows-release",
+      "output": {"outputOnFailure": true}
+    },
+    {
+      "name": "windows-hardware",
+      "configurePreset": "windows-cuda-release",
+      "filter": {"include": {"label": "hardware-required"}},
+      "output": {"outputOnFailure": true}
+    }
+  ]
+}

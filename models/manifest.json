@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "artifacts": [
+    {
+      "id": "yolox-tiny-humanart-416x416",
+      "role": "person_detector",
+      "upstream": "OpenMMLab RTMPose ONNX SDK export",
+      "upstream_revision": "MMDetection 3.0.0 export dated 2023-09-28",
+      "url": "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/yolox_tiny_8xb8-300e_humanart-6f3252f9.zip",
+      "archive_sha256": "36e09ca555916253fa1b5d51bec01e48e98e1f0af966c51ce3e844d8c8fc4cfc",
+      "onnx_sha256": "ceb11c07298f95c50d7c5abeb906d03340c85f23aa79e3e66966e7fb6c307250",
+      "onnx_file": "detector.onnx",
+      "input": "BGR float32 NCHW, 1x3x416x416, aspect-preserving resize, bottom/right padding 114",
+      "output": "dets float32 [1,N,5] xyxy+score and labels int64 [1,N]",
+      "license": "Apache-2.0 code; trained-weight and dataset terms require separate review",
+      "redistribution": "Not approved for redistribution by this project"
+    },
+    {
+      "id": "rtmpose-m-halpe26-256x192",
+      "role": "pose_estimator",
+      "upstream": "OpenMMLab MMPose RTMPose ONNX SDK export",
+      "upstream_revision": "MMPose 1.1.0 export dated 2023-08-31",
+      "url": "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/rtmpose-m_simcc-body7_pt-body7-halpe26_700e-256x192-4d3e73dd_20230605.zip",
+      "archive_sha256": "55b81170e236040b59fc792ad0a8315301ac4c079a3bdb1095d838aad3088d18",
+      "onnx_sha256": "26f3a19e61304a600dfb82d1001d41d24343b89fc70a33ffc84657e0b0bf2ecf",
+      "onnx_file": "pose.onnx",
+      "input": "RGB float32 NCHW, dynamic batch, 3x256x192, affine crop, mean 123.675/116.28/103.53, std 58.395/57.12/57.375",
+      "output": "simcc_x [N,26,384] and simcc_y [N,26,512], split ratio 2.0",
+      "license": "Apache-2.0 code; HALPE/training dataset and trained-weight terms require separate review",
+      "redistribution": "Not approved for redistribution by this project"
+    }
+  ]
+}
+
