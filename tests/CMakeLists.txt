@@ -88,6 +88,21 @@ set_tests_properties(squatris-benchmark-failure-report-validation PROPERTIES
   FIXTURES_REQUIRED failed_benchmark_report
 )
 
+if(SQUATRIS_ENABLE_GUI_SMOKE_TEST)
+  if(NOT WIN32)
+    message(FATAL_ERROR "The native Pose Lab GUI smoke test currently requires Windows")
+  endif()
+  add_test(NAME squatris-pose-lab-gui-smoke
+    COMMAND squatris-pose-lab --synthetic --backend mock --width 640 --height 480 --fps 30
+            --gui-smoke-seconds 3
+  )
+  set_tests_properties(squatris-pose-lab-gui-smoke PROPERTIES
+    LABELS "gui-smoke;opt-in"
+    TIMEOUT 15
+    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+  )
+endif()
+
 if(SQUATRIS_ENABLE_HARDWARE_TESTS)
   if(NOT SQUATRIS_ENABLE_ONNXRUNTIME)
     message(FATAL_ERROR "Hardware tests require SQUATRIS_ENABLE_ONNXRUNTIME=ON")

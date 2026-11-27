@@ -20,6 +20,11 @@ Status PrerecordedSource::start() {
       filesystem_error) {
     return {ErrorCode::not_found, "Prerecorded video does not exist"};
   }
+  if (config_.simulated_fps.has_value() &&
+      (!std::isfinite(*config_.simulated_fps) || *config_.simulated_fps <= 0.0 ||
+       *config_.simulated_fps > 240.0)) {
+    return {ErrorCode::invalid_argument, "Simulated prerecorded source rate must be in (0, 240]"};
+  }
   if (start_attempted_.exchange(true)) {
     return {ErrorCode::initialization_failed, "Prerecorded source instances are single-use"};
   }
@@ -100,16 +105,17 @@ void PrerecordedSource::run(const std::stop_token& stop_token) {
     return;
   }
   const auto file_fps = capture.get(cv::CAP_PROP_FPS) > 0.0 ? capture.get(cv::CAP_PROP_FPS) : 30.0;
+  const auto pacing_fps = config_.simulated_fps.value_or(file_fps);
   {
     std::lock_guard lock(state_mutex_);
     format_ = {static_cast<std::uint32_t>(capture.get(cv::CAP_PROP_FRAME_WIDTH)),
                static_cast<std::uint32_t>(capture.get(cv::CAP_PROP_FRAME_HEIGHT)),
-               file_fps,
+               pacing_fps,
                file_fps,
                capture.getBackendName(),
                "decoded-BGR8"};
   }
-  const auto interval = std::chrono::duration<double>(1.0 / file_fps);
+  const auto interval = std::chrono::duration<double>(1.0 / pacing_fps);
   auto next_frame = pose::Clock::now();
   auto rate_start = next_frame;
   std::uint64_t rate_frames{};

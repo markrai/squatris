@@ -15,6 +15,7 @@ struct SequentialSourceConfig {
   std::uint32_t synthetic_width{640};
   std::uint32_t synthetic_height{480};
   double synthetic_fps{60.0};
+  bool loop{};
 };
 
 class SequentialFrameSource final : public input::IFrameSource {
@@ -41,6 +42,8 @@ private:
   input::CaptureFormat format_{};
   std::optional<Status> terminal_error_;
   std::uint64_t delivered_{};
+  std::uint64_t source_loop_index_{};
+  std::uint64_t frames_in_loop_{};
   bool start_attempted_{};
   bool started_{};
 };

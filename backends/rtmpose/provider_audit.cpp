@@ -96,16 +96,34 @@ Result<nlohmann::json> analyze_profile(const ProviderProfile& profile) {
     if (copy_event(event)) {
       memory_copies.push_back(event);
     }
+    const auto event_name = event.value("name", std::string{});
+    const auto is_kernel_record = event_name.ends_with("_kernel_time");
     if (!event.contains("args") || !event["args"].is_object()) {
+      if (is_kernel_record) {
+        return Status{ErrorCode::invalid_data,
+                      "Provider profile contains a kernel record without node arguments"};
+      }
       continue;
     }
     const auto& args = event["args"];
-    if (!args.contains("provider") || !args["provider"].is_string() || !args.contains("op_name") ||
-        !args["op_name"].is_string() || !args.contains("node_index") ||
-        !args["node_index"].is_string()) {
+    const auto has_provider_field = args.contains("provider");
+    if (!is_kernel_record && !has_provider_field) {
       continue;
     }
-    const auto name = stable_node_name(event.value("name", std::string{}));
+    if (!is_kernel_record || !args.contains("provider") || !args["provider"].is_string() ||
+        args["provider"].get_ref<const std::string&>().empty() || !args.contains("op_name") ||
+        !args["op_name"].is_string() || args["op_name"].get_ref<const std::string&>().empty() ||
+        !args.contains("node_index") || !args["node_index"].is_string() ||
+        args["node_index"].get_ref<const std::string&>().empty() ||
+        !args.contains("input_type_shape") || !args.contains("output_type_shape") ||
+        !event.contains("dur") || !event["dur"].is_number_unsigned()) {
+      return Status{ErrorCode::invalid_data,
+                    "Provider profile contains a malformed or incomplete node record"};
+    }
+    const auto name = stable_node_name(event_name);
+    if (name.empty()) {
+      return Status{ErrorCode::invalid_data, "Provider profile contains an unnamed node record"};
+    }
     const nlohmann::json identity = {
         {"name", name}, {"operator", args["op_name"]}, {"node_index", args["node_index"]}};
     const auto key = node_key(identity);
@@ -189,7 +207,10 @@ Result<nlohmann::json> analyze_provider_profiles(const std::vector<ProviderProfi
                                                  const std::filesystem::path& policy_manifest,
                                                  const std::string& detector_sha256,
                                                  const std::string& pose_sha256,
-                                                 const std::string& runtime_version) {
+                                                 const std::string& runtime_version,
+                                                 const std::string& runtime_header_version,
+                                                 const nlohmann::json& runtime_artifacts,
+                                                 bool verified_sessions_retained) {
   const auto manifest = load_json(policy_manifest);
   if (!manifest) {
     return manifest.error();
@@ -205,6 +226,12 @@ Result<nlohmann::json> analyze_provider_profiles(const std::vector<ProviderProfi
         manifest.value().at("graph_optimization_level") != "ORT_ENABLE_ALL" ||
         manifest.value().at("execution_mode") != "ORT_SEQUENTIAL") {
       errors.push_back("Policy identity does not match the configured ONNX Runtime session");
+    }
+    if (runtime_header_version != runtime_version) {
+      errors.push_back("Loaded ONNX Runtime version does not match the compile-time headers");
+    }
+    if (!runtime_artifacts.is_array() || runtime_artifacts.empty()) {
+      errors.push_back("Loaded ONNX Runtime artifacts were not identified");
     }
     std::map<std::string, nlohmann::json> analyzed;
     for (const auto& profile : profiles) {
@@ -292,10 +319,13 @@ Result<nlohmann::json> analyze_provider_profiles(const std::vector<ProviderProfi
                           {"policy_manifest", std::filesystem::absolute(policy_manifest).string()},
                           {"policy_manifest_sha256", manifest_hash.value()},
                           {"runtime_version", runtime_version},
+                          {"runtime_header_version", runtime_header_version},
+                          {"runtime_artifacts", runtime_artifacts},
+                          {"verified_sessions_retained", verified_sessions_retained},
                           {"graph_optimization_level", "ORT_ENABLE_ALL"},
                           {"execution_mode", "ORT_SEQUENTIAL"},
                           {"cuda_graph_execution", false},
-                          {"static_assignment_complete", true},
+                          {"static_assignment_complete", false},
                           {"runtime_evidence_scope", "observed-straight-line-preflight"},
                           {"sessions", sessions},
                           {"verification_errors", errors},

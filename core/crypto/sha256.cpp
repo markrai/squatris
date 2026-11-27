@@ -49,7 +49,15 @@ Result<std::string> sha256_file(const std::filesystem::path& path) {
     close();
     return Status{ErrorCode::not_found, "File could not be opened for SHA-256: " + path.string()};
   }
+  std::error_code size_error;
+  const auto expected_size = std::filesystem::file_size(path, size_error);
+  if (size_error) {
+    close();
+    return Status{ErrorCode::io_error,
+                  "File size could not be read for SHA-256: " + path.string()};
+  }
   std::array<char, 1 << 16> buffer{};
+  std::uintmax_t total_bytes{};
   while (stream) {
     stream.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
     const auto bytes = stream.gcount();
@@ -58,6 +66,14 @@ Result<std::string> sha256_file(const std::filesystem::path& path) {
       close();
       return Status{ErrorCode::io_error, "Windows SHA-256 update failed"};
     }
+    total_bytes += static_cast<std::uintmax_t>(bytes);
+  }
+  const auto final_size = std::filesystem::file_size(path, size_error);
+  if (stream.bad() || !stream.eof() || size_error || total_bytes != expected_size ||
+      final_size != expected_size) {
+    close();
+    return Status{ErrorCode::io_error,
+                  "File read was incomplete or changed during SHA-256: " + path.string()};
   }
   if (BCryptFinishHash(hash, digest.data(), hash_size, 0) < 0) {
     close();

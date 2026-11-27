@@ -16,6 +16,7 @@
 #include <memory>
 #include <optional>
 #include <ranges>
+#include <set>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -36,13 +37,24 @@
 #include "squatris/backends/rtmpose/rtmpose_estimator.hpp"
 #include "squatris/core/crypto/sha256.hpp"
 #include "squatris/core/inference/tracking_assessment.hpp"
+#include "squatris/core/io/atomic_file.hpp"
 #include "squatris/core/metrics/latency_statistics.hpp"
 #include "squatris/core/pose/geometry.hpp"
+
+#include "parity.hpp"
+#include "body_regions.hpp"
+#include "report.hpp"
 
 namespace {
 
 using squatris::ErrorCode;
 using squatris::Status;
+using squatris::benchmark::load_json;
+using squatris::benchmark::compare_parity_reports;
+using squatris::benchmark::body_regions;
+using squatris::benchmark::validate_report;
+using squatris::benchmark::validate_report_file;
+using squatris::benchmark::write_report;
 
 enum class BenchmarkMode : std::uint8_t { deterministic, realtime };
 
@@ -68,8 +80,10 @@ struct Options {
   std::uint32_t deadline_seconds{600};
   std::uint32_t duration_seconds{};
   std::uint32_t frame_timeout_ms{5000};
+  double simulated_source_fps{};
   bool loop_video{};
   bool profile_production{};
+  bool recreate_audited_sessions{};
 };
 
 struct PhaseStatistics {
@@ -102,25 +116,6 @@ struct PhaseStatistics {
   std::array<std::uint64_t, 6> right_landmark_available{};
   std::array<std::uint64_t, 6> pair_available{};
 };
-
-struct BodyRegion {
-  std::string_view name;
-  squatris::pose::LandmarkId left;
-  squatris::pose::LandmarkId right;
-};
-
-constexpr std::array body_regions{
-    BodyRegion{"shoulders", squatris::pose::LandmarkId::left_shoulder,
-               squatris::pose::LandmarkId::right_shoulder},
-    BodyRegion{"elbows", squatris::pose::LandmarkId::left_elbow,
-               squatris::pose::LandmarkId::right_elbow},
-    BodyRegion{"wrists", squatris::pose::LandmarkId::left_wrist,
-               squatris::pose::LandmarkId::right_wrist},
-    BodyRegion{"hips", squatris::pose::LandmarkId::left_hip, squatris::pose::LandmarkId::right_hip},
-    BodyRegion{"knees", squatris::pose::LandmarkId::left_knee,
-               squatris::pose::LandmarkId::right_knee},
-    BodyRegion{"ankles", squatris::pose::LandmarkId::left_ankle,
-               squatris::pose::LandmarkId::right_ankle}};
 
 std::optional<std::string> next_value(int& index, int argc, char** argv) {
   if (index + 1 >= argc) {
@@ -165,6 +160,9 @@ std::optional<Options> parse(int argc, char** argv) {
       }
       if (argument == "--frame-timeout-ms") {
         return parse_number(*value, options.frame_timeout_ms);
+      }
+      if (argument == "--simulated-source-fps") {
+        return parse_number(*value, options.simulated_source_fps);
       }
       if (argument == "--max-consecutive-failures") {
         return parse_number(*value, options.maximum_consecutive_failures);
@@ -217,6 +215,15 @@ std::optional<Options> parse(int argc, char** argv) {
         std::cerr << "Profile-production must be true or false\n";
         return std::nullopt;
       }
+    } else if (argument == "--recreate-audited-sessions") {
+      if (*value == "true") {
+        options.recreate_audited_sessions = true;
+      } else if (*value == "false") {
+        options.recreate_audited_sessions = false;
+      } else {
+        std::cerr << "Recreate-audited-sessions must be true or false\n";
+        return std::nullopt;
+      }
     } else if (argument == "--mode") {
       if (*value == "deterministic") {
         options.mode = BenchmarkMode::deterministic;
@@ -229,7 +236,7 @@ std::optional<Options> parse(int argc, char** argv) {
     } else if (argument != "--warmup" && argument != "--iterations" && argument != "--width" &&
                argument != "--height" && argument != "--deadline-seconds" &&
                argument != "--duration-seconds" && argument != "--frame-timeout-ms" &&
-               argument != "--max-consecutive-failures") {
+               argument != "--simulated-source-fps" && argument != "--max-consecutive-failures") {
       std::cerr << "Unknown argument: " << argument << '\n';
       return std::nullopt;
     }
@@ -262,9 +269,15 @@ std::optional<Options> parse(int argc, char** argv) {
   if (options.duration_seconds > 3600 ||
       (options.duration_seconds > 0 &&
        (options.mode != BenchmarkMode::realtime || options.video.empty())) ||
-      (options.loop_video && (options.mode != BenchmarkMode::realtime || options.video.empty()))) {
-    std::cerr << "Duration and video looping require prerecorded realtime mode; duration is "
-                 "limited to one hour\n";
+      (options.loop_video && options.video.empty())) {
+    std::cerr << "Duration requires prerecorded realtime mode, looping requires video input, and "
+                 "duration is limited to one hour\n";
+    return std::nullopt;
+  }
+  if (options.simulated_source_fps < 0.0 || options.simulated_source_fps > 240.0 ||
+      (options.simulated_source_fps > 0.0 &&
+       (options.mode != BenchmarkMode::realtime || options.video.empty()))) {
+    std::cerr << "Simulated source FPS must be in (0, 240] and requires prerecorded realtime mode\n";
     return std::nullopt;
   }
   if (options.profile_production &&
@@ -274,6 +287,10 @@ std::optional<Options> parse(int argc, char** argv) {
                  "total frames\n";
     return std::nullopt;
   }
+  if (options.recreate_audited_sessions && options.provider != "cuda-audited") {
+    std::cerr << "Audited session recreation is a cuda-audited diagnostic only\n";
+    return std::nullopt;
+  }
   return options;
 }
 
@@ -281,12 +298,17 @@ std::unique_ptr<squatris::input::IFrameSource> make_source(const Options& option
   if (options.mode == BenchmarkMode::deterministic) {
     return std::make_unique<squatris::backends::camera::SequentialFrameSource>(
         squatris::backends::camera::SequentialSourceConfig{options.video, options.width,
-                                                           options.height, 60.0});
+                                                           options.height, 60.0,
+                                                           options.loop_video});
   }
   if (!options.video.empty()) {
     return std::make_unique<squatris::backends::camera::PrerecordedSource>(
         squatris::backends::camera::PrerecordedSourceConfig{options.video, true,
-                                                            options.loop_video});
+                                                            options.loop_video,
+                                                            options.simulated_source_fps > 0.0
+                                                                ? std::optional<double>(
+                                                                      options.simulated_source_fps)
+                                                                : std::nullopt});
   }
   return std::make_unique<squatris::backends::camera::SyntheticSource>(
       squatris::backends::camera::SyntheticSourceConfig{options.width, options.height, 60.0});
@@ -311,6 +333,7 @@ make_estimator(const Options& options) {
   }
   if (config.provider == squatris::backends::rtmpose::ExecutionProvider::cuda_audited) {
     config.provider_policy_manifest = options.policy_manifest;
+    config.recreate_audited_sessions_for_experiment = options.recreate_audited_sessions;
     if (options.profile_production) {
       config.production_profiling_output_prefix =
           options.output.parent_path() /
@@ -588,18 +611,6 @@ nlohmann::json phase_json(const PhaseStatistics& phase) {
              percentile_json(phase.capture_to_completion.calculate())}}}};
 }
 
-squatris::Result<nlohmann::json> load_json(const std::filesystem::path& path) {
-  std::ifstream input(path);
-  if (!input) {
-    return Status{ErrorCode::not_found, "Could not open JSON file: " + path.string()};
-  }
-  try {
-    return nlohmann::json::parse(input);
-  } catch (const nlohmann::json::exception& exception) {
-    return Status{ErrorCode::invalid_data,
-                  "Invalid JSON in " + path.string() + ": " + std::string(exception.what())};
-  }
-}
 
 nlohmann::json hardware_identity() {
   return {{"processor", environment_value("PROCESSOR_IDENTIFIER")},
@@ -691,7 +702,11 @@ nlohmann::json initial_report(const Options& options) {
         {"source_sha256", nullptr},
         {"width", options.width},
         {"height", options.height},
-        {"source_fps", 0.0}}},
+         {"source_fps", 0.0},
+         {"native_media_fps", 0.0},
+         {"delivery_target_fps", 0.0},
+         {"pacing", options.simulated_source_fps > 0.0 ? "simulated-rate"
+                                                        : "native-media-timestamps"}}},
       {"configuration",
        {{"mode", options.mode == BenchmarkMode::deterministic ? "deterministic" : "realtime"},
         {"warmup_iterations", options.warmup},
@@ -701,7 +716,11 @@ nlohmann::json initial_report(const Options& options) {
                                  ? nlohmann::json(nullptr)
                                  : nlohmann::json(options.duration_seconds)},
         {"loop_video", options.loop_video},
+         {"simulated_source_fps", options.simulated_source_fps > 0.0
+                                      ? nlohmann::json(options.simulated_source_fps)
+                                      : nlohmann::json(nullptr)},
         {"production_profiling_enabled", options.profile_production},
+         {"recreate_audited_sessions_for_experiment", options.recreate_audited_sessions},
         {"deadline_seconds", options.deadline_seconds},
         {"frame_timeout_ms", options.frame_timeout_ms},
         {"maximum_consecutive_failures", options.maximum_consecutive_failures},
@@ -728,49 +747,6 @@ nlohmann::json initial_report(const Options& options) {
       {"results", {{"frames_skipped", 0}, {"source_frames_delivered", 0}}}};
 }
 
-Status write_report(const std::filesystem::path& path, const nlohmann::json& report) {
-  std::filesystem::path temporary;
-  try {
-    if (!path.parent_path().empty()) {
-      std::filesystem::create_directories(path.parent_path());
-    }
-    const auto directory =
-        path.parent_path().empty() ? std::filesystem::current_path() : path.parent_path();
-    const auto identifier = std::chrono::steady_clock::now().time_since_epoch().count();
-    temporary = directory / (path.filename().string() + ".tmp." + std::to_string(identifier));
-    std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
-    if (!output) {
-      return {ErrorCode::io_error, "Could not write temporary report " + temporary.string()};
-    }
-    output << report.dump(2) << '\n';
-    output.flush();
-    if (!output) {
-      output.close();
-      std::filesystem::remove(temporary);
-      return {ErrorCode::io_error, "Could not finish writing " + temporary.string()};
-    }
-    output.close();
-#ifdef _WIN32
-    if (MoveFileExW(temporary.c_str(), path.c_str(),
-                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == 0) {
-      const auto error = GetLastError();
-      std::filesystem::remove(temporary);
-      return {ErrorCode::io_error,
-              "Atomic report replacement failed with Windows error " + std::to_string(error)};
-    }
-#else
-    std::filesystem::rename(temporary, path);
-#endif
-    return Status::success();
-  } catch (const std::exception& exception) {
-    std::error_code ignored;
-    if (!temporary.empty()) {
-      std::filesystem::remove(temporary, ignored);
-    }
-    return {ErrorCode::io_error,
-            "Could not write " + path.string() + ": " + std::string(exception.what())};
-  }
-}
 
 void record_failure(nlohmann::json& report, const Status& error, std::string_view stage,
                     std::uint64_t errors = 1) {
@@ -856,101 +832,17 @@ production_profiling_evidence(squatris::inference::IPoseEstimator& estimator,
   if (!detector_hash || !pose_hash) {
     return detector_hash ? pose_hash.error() : detector_hash.error();
   }
+  const auto policy_evidence = rtmpose->provider_policy_evidence();
+  if (!policy_evidence) {
+    return policy_evidence.error();
+  }
   return squatris::backends::rtmpose::analyze_provider_profiles(
       profiles.value(), options.policy_manifest, detector_hash.value(), pose_hash.value(),
-      SQUATRIS_ONNXRUNTIME_VERSION);
+      policy_evidence.value().at("runtime_version").get<std::string>(),
+      policy_evidence.value().at("runtime_header_version").get<std::string>(),
+      policy_evidence.value().at("runtime_artifacts"), false);
 }
 
-Status validate_strict_profile_reference(const nlohmann::json& expected) {
-  const auto path = expected.at("path").get<std::filesystem::path>();
-  const auto hash = squatris::crypto::sha256_file(path);
-  if (!hash || hash.value() != expected.at("sha256").get<std::string>()) {
-    return {ErrorCode::invalid_data, "Strict CUDA profile hash does not match its artifact"};
-  }
-  const auto trace = load_json(path);
-  if (!trace || !trace.value().is_array()) {
-    return trace ? Status{ErrorCode::invalid_data, "Strict CUDA profile is not an event array"}
-                 : trace.error();
-  }
-  std::uint64_t cuda_nodes{};
-  std::uint64_t cpu_nodes{};
-  std::uint64_t other_nodes{};
-  for (const auto& event : trace.value()) {
-    if (!event.is_object() || !event.contains("args") || !event["args"].is_object() ||
-        !event["args"].contains("provider") || !event["args"]["provider"].is_string()) {
-      continue;
-    }
-    const auto provider = event["args"]["provider"].get<std::string>();
-    if (provider == "CUDAExecutionProvider") {
-      ++cuda_nodes;
-    } else if (provider == "CPUExecutionProvider") {
-      ++cpu_nodes;
-    } else {
-      ++other_nodes;
-    }
-  }
-  if (cuda_nodes != expected.at("cuda_node_events").get<std::uint64_t>() ||
-      cpu_nodes != expected.at("cpu_node_events").get<std::uint64_t>() ||
-      other_nodes != expected.at("other_node_events").get<std::uint64_t>()) {
-    return {ErrorCode::invalid_data, "Strict CUDA profile contents do not match the report"};
-  }
-  return Status::success();
-}
-
-Status validate_audited_profile_evidence(const nlohmann::json& evidence,
-                                         const std::string& detector_hash,
-                                         const std::string& pose_hash,
-                                         const std::string& runtime_version) {
-  const auto invalid = [](std::string message) {
-    return Status{ErrorCode::invalid_data, std::move(message)};
-  };
-  const auto valid_hash = [](const nlohmann::json& value) {
-    if (!value.is_string()) {
-      return false;
-    }
-    const auto hash = value.get<std::string>();
-    return hash.size() == 64 && std::ranges::all_of(hash, [](unsigned char character) {
-             return std::isxdigit(character) != 0;
-           });
-  };
-  try {
-    if (evidence.at("method") != "onnxruntime-profile-plus-pinned-policy" ||
-        !evidence.at("verified").get<bool>() ||
-        !valid_hash(evidence.at("policy_manifest_sha256")) || evidence.at("sessions").size() != 2) {
-      return invalid("Audited CUDA evidence lacks a verified pinned policy");
-    }
-    std::array<bool, 2> sessions{};
-    std::vector<squatris::backends::rtmpose::ProviderProfile> profiles;
-    for (const auto& session : evidence.at("sessions")) {
-      const auto name = session.at("session").get<std::string>();
-      if (name == "detector") {
-        sessions[0] = true;
-      } else if (name == "pose") {
-        sessions[1] = true;
-      } else {
-        return invalid("Audited provider evidence identifies an unknown session");
-      }
-      if (!valid_hash(session.at("sha256")) || session.at("cuda_nodes").empty() ||
-          !session.at("unexpected_cpu_nodes").empty() ||
-          !session.at("unknown_provider_nodes").empty() || !session.at("verified").get<bool>()) {
-        return invalid("Audited CUDA provider evidence violates the pinned policy");
-      }
-      profiles.push_back({name, session.at("path").get<std::filesystem::path>()});
-    }
-    if (!sessions[0] || !sessions[1]) {
-      return invalid("Audited provider evidence does not cover both model sessions");
-    }
-    const auto reconstructed = squatris::backends::rtmpose::analyze_provider_profiles(
-        profiles, evidence.at("policy_manifest").get<std::filesystem::path>(), detector_hash,
-        pose_hash, runtime_version);
-    if (!reconstructed || reconstructed.value() != evidence) {
-      return invalid("Audited provider artifacts do not reproduce the reported evidence");
-    }
-    return Status::success();
-  } catch (const nlohmann::json::exception& exception) {
-    return invalid("Audited provider evidence is malformed: " + std::string(exception.what()));
-  }
-}
 
 squatris::Result<nlohmann::json> verified_model_identity(const Options& options) {
   if (options.backend != "rtmpose") {
@@ -1026,652 +918,7 @@ squatris::Result<nlohmann::json> verified_model_identity(const Options& options)
         {"profiles", nlohmann::json::array()}}}};
 }
 
-Status validate_report(const nlohmann::json& report) {
-  try {
-    if (report.at("schema_version") != 4) {
-      return {ErrorCode::invalid_data, "Unsupported benchmark report schema"};
-    }
-    const auto invalid = [](std::string message) {
-      return Status{ErrorCode::invalid_data, std::move(message)};
-    };
-    const auto valid_hash = [](const nlohmann::json& value) {
-      if (!value.is_string()) {
-        return false;
-      }
-      const auto hash = value.get<std::string>();
-      return hash.size() == 64 && std::ranges::all_of(hash, [](unsigned char character) {
-               return std::isxdigit(character) != 0;
-             });
-    };
-    const auto finite_nonnegative = [](double value) {
-      return std::isfinite(value) && value >= 0.0;
-    };
-    const auto& executable = report.at("build").at("executable");
-    if (!executable.is_object() || executable.at("path").get<std::string>().empty() ||
-        !valid_hash(executable.at("sha256"))) {
-      return invalid("Benchmark report lacks a verified executable identity");
-    }
-    const auto approximately_equal = [](double first, double second) {
-      const auto scale = (std::max)(1.0, (std::max)(std::abs(first), std::abs(second)));
-      return std::abs(first - second) <= scale * 1.0e-6;
-    };
-    const auto mode = report.at("configuration").at("mode").get<std::string>();
-    if (mode != "deterministic" && mode != "realtime") {
-      return {ErrorCode::invalid_data, "Benchmark report has an invalid mode"};
-    }
-    const auto duration_mode = !report.at("configuration").at("duration_seconds").is_null();
-    const auto loop_video = report.at("configuration").at("loop_video").get<bool>();
-    if ((duration_mode || loop_video) && mode != "realtime") {
-      return invalid("Duration and looping evidence require realtime mode");
-    }
-    const auto& model = report.at("model");
-    const auto provider = model.at("execution_provider").get<std::string>();
-    if (provider != "deterministic-cpu" && provider != "CPUExecutionProvider" &&
-        provider != "CUDAExecutionProvider" &&
-        provider != "CUDAExecutionProvider+CPUExecutionProvider") {
-      return {ErrorCode::invalid_data, "Benchmark report has an unknown provider"};
-    }
-    const auto policy = model.at("execution_policy").get<std::string>();
-    if ((policy == "cpu" && provider != "deterministic-cpu" &&
-         provider != "CPUExecutionProvider") ||
-        (policy == "cuda-strict" && provider != "CUDAExecutionProvider") ||
-        (policy == "cuda-audited" && provider != "CUDAExecutionProvider+CPUExecutionProvider") ||
-        (policy != "cpu" && policy != "cuda-strict" && policy != "cuda-audited")) {
-      return {ErrorCode::invalid_data, "Benchmark execution policy and provider are inconsistent"};
-    }
-    for (const auto* key : {"detector_sha256", "pose_sha256"}) {
-      if (!model.at(key).is_null() && !valid_hash(model.at(key))) {
-        return invalid(std::string("Benchmark report has an invalid ") + key);
-      }
-    }
-    const auto expected_warmup =
-        report.at("configuration").at("warmup_iterations").get<std::size_t>();
-    const auto expected_measured =
-        duration_mode ? (std::numeric_limits<std::size_t>::max)()
-                      : report.at("configuration").at("measured_iterations").get<std::size_t>();
-    const auto& warmup = report.at("warmup");
-    const auto& measured = report.at("measured");
-    std::optional<std::uint64_t> previous_sequence;
-    std::optional<std::uint64_t> previous_source_index;
-    std::optional<std::uint64_t> previous_loop_index;
-    std::optional<std::int64_t> previous_media_timestamp;
-    std::uint64_t derived_skips{};
-    const auto validate_phase = [&](const nlohmann::json& phase, std::size_t expected_max,
-                                    std::string_view phase_name) -> Status {
-      const auto frames = phase.at("frames_processed").get<std::size_t>();
-      const auto& records = phase.at("processed_frames");
-      if (!records.is_array() || records.size() != frames || frames > expected_max) {
-        return invalid(std::string(phase_name) + " processed frame count is inconsistent");
-      }
-      std::uint64_t pose_available{};
-      std::uint64_t usable_pose{};
-      std::uint64_t full_body{};
-      std::array<std::uint64_t, body_regions.size()> left{};
-      std::array<std::uint64_t, body_regions.size()> right{};
-      std::array<std::uint64_t, body_regions.size()> complete{};
-      constexpr std::array timing_names{"frame_acquisition",
-                                        "estimator_end_to_end",
-                                        "frame_age_at_inference_start",
-                                        "detector_total",
-                                        "detector_preprocessing",
-                                        "detector_inference",
-                                        "detector_postprocessing",
-                                        "pose_preprocessing",
-                                        "pose_inference",
-                                        "pose_postprocessing",
-                                        "capture_delivery_to_pose_completion"};
-      std::map<std::string, std::vector<double>> timing_samples;
-      for (const auto& record : records) {
-        const auto sequence = record.at("sequence").get<std::uint64_t>();
-        if (sequence == 0 || (previous_sequence.has_value() && sequence <= *previous_sequence)) {
-          return invalid("Benchmark frame sequences are not strictly increasing");
-        }
-        if (previous_sequence.has_value()) {
-          const auto gap = sequence - *previous_sequence - 1;
-          derived_skips += gap;
-          if (mode == "deterministic" && gap != 0) {
-            return invalid("Deterministic benchmark frame sequences are not contiguous");
-          }
-        }
-        previous_sequence = sequence;
-        const auto& loop_index_value = record.at("source_loop_index");
-        if (!loop_index_value.is_null()) {
-          const auto loop_index = loop_index_value.get<std::uint64_t>();
-          if (!loop_video ||
-              (previous_loop_index.has_value() &&
-               (loop_index < *previous_loop_index || loop_index > *previous_loop_index + 1))) {
-            return invalid("Source loop identities are inconsistent");
-          }
-          if (previous_loop_index.has_value() && loop_index != *previous_loop_index) {
-            previous_source_index.reset();
-            previous_media_timestamp.reset();
-          }
-          previous_loop_index = loop_index;
-        } else if (loop_video) {
-          return invalid("Looped input is missing a loop identity");
-        }
-        const auto& source_index = record.at("source_frame_index");
-        if (!source_index.is_null()) {
-          const auto index = source_index.get<std::uint64_t>();
-          if (previous_source_index.has_value() &&
-              (index <= *previous_source_index ||
-               (mode == "deterministic" && index != *previous_source_index + 1))) {
-            return invalid("Source frame indices are out of order");
-          }
-          previous_source_index = index;
-        }
-        const auto& media_timestamp = record.at("source_media_timestamp_us");
-        if (!media_timestamp.is_null()) {
-          const auto timestamp = media_timestamp.get<std::int64_t>();
-          if (timestamp < 0 ||
-              (previous_media_timestamp.has_value() && timestamp < *previous_media_timestamp)) {
-            return invalid("Source media timestamps are out of order");
-          }
-          previous_media_timestamp = timestamp;
-        }
-        const auto has_pose = record.at("pose_available").get<bool>();
-        const auto person_detected = record.at("person_detected").get<bool>();
-        const auto& selected_person = record.at("selected_person");
-        if (person_detected != selected_person.is_object()) {
-          return invalid("Person detection and selected bounding box are inconsistent");
-        }
-        if (selected_person.is_object()) {
-          const auto box_left = selected_person.at("left").get<double>();
-          const auto top = selected_person.at("top").get<double>();
-          const auto box_right = selected_person.at("right").get<double>();
-          const auto bottom = selected_person.at("bottom").get<double>();
-          const auto confidence = selected_person.at("confidence").get<double>();
-          if (!std::isfinite(box_left) || !std::isfinite(top) || !std::isfinite(box_right) ||
-              !std::isfinite(bottom) || !std::isfinite(confidence) || box_left < 0.0 || top < 0.0 ||
-              box_right > 1.0 || bottom > 1.0 || box_left >= box_right || top >= bottom ||
-              confidence < 0.0 || confidence > 1.0) {
-            return invalid("Selected person bounding box is invalid");
-          }
-        }
-        const auto& landmarks = record.at("landmarks");
-        if (!landmarks.is_array() || landmarks.size() != squatris::pose::landmark_count) {
-          return invalid("Canonical landmark evidence has an invalid size");
-        }
-        const auto& pose_confidence = record.at("pose_confidence");
-        if (has_pose != pose_confidence.is_number()) {
-          return invalid("Pose availability and confidence are inconsistent");
-        }
-        if (pose_confidence.is_number()) {
-          const auto confidence = pose_confidence.get<double>();
-          if (!std::isfinite(confidence) || confidence < 0.0 || confidence > 1.0) {
-            return invalid("Pose confidence is invalid");
-          }
-        }
-        for (std::size_t index = 0; index < landmarks.size(); ++index) {
-          const auto& landmark = landmarks[index];
-          const auto id = static_cast<squatris::pose::LandmarkId>(index);
-          const auto available = landmark.at("available").get<bool>();
-          if (landmark.at("name") != squatris::pose::to_string(id) || (!has_pose && available)) {
-            return invalid("Canonical landmark identity or availability is inconsistent");
-          }
-          if (available) {
-            const auto x = landmark.at("x").get<double>();
-            const auto y = landmark.at("y").get<double>();
-            const auto confidence = landmark.at("confidence").get<double>();
-            if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(confidence) || x < 0.0 ||
-                x > 1.0 || y < 0.0 || y > 1.0 || confidence < 0.0 || confidence > 1.0) {
-              return invalid("Canonical landmark value is invalid");
-            }
-          } else if (!landmark.at("x").is_null() || !landmark.at("y").is_null() ||
-                     !landmark.at("confidence").is_null()) {
-            return invalid("Unavailable canonical landmark contains values");
-          }
-        }
-        const auto& knee_angles = record.at("projected_knee_angles_degrees");
-        for (const auto* side : {"left", "right"}) {
-          if (!knee_angles.at(side).is_null()) {
-            const auto angle = knee_angles.at(side).get<double>();
-            if (!std::isfinite(angle) || angle < 0.0 || angle > 180.0) {
-              return invalid("Projected knee angle is invalid");
-            }
-          }
-        }
-        const auto usable = record.at("usable_pose").get<bool>();
-        const auto is_full_body = record.at("full_body_complete").get<bool>();
-        const auto tracking_state = record.at("tracking_state").get<std::string>();
-        if (usable != (tracking_state == "usable-pose") || (usable && !has_pose) ||
-            (is_full_body && !has_pose)) {
-          return invalid("Tracking state and pose availability are inconsistent");
-        }
-        pose_available += has_pose ? 1 : 0;
-        usable_pose += usable ? 1 : 0;
-        full_body += is_full_body ? 1 : 0;
-        const auto& coverage = record.at("landmark_coverage");
-        bool derived_full_body = has_pose;
-        for (std::size_t index = 0; index < body_regions.size(); ++index) {
-          const auto& region = coverage.at(std::string(body_regions[index].name));
-          const auto left_available = region.at("left").get<bool>();
-          const auto right_available = region.at("right").get<bool>();
-          const auto pair = region.at("complete").get<bool>();
-          if (pair != (left_available && right_available)) {
-            return invalid("Landmark coverage pair completeness is inconsistent");
-          }
-          left[index] += left_available ? 1 : 0;
-          right[index] += right_available ? 1 : 0;
-          complete[index] += pair ? 1 : 0;
-          derived_full_body = derived_full_body && pair;
-        }
-        if (derived_full_body != is_full_body) {
-          return invalid("Full-body completeness does not match landmark coverage");
-        }
-        const auto& frame_timings = record.at("timings_ms");
-        for (const auto* timing : timing_names) {
-          const auto sample = frame_timings.at(timing).get<double>();
-          if (!finite_nonnegative(sample)) {
-            return invalid("Per-frame timing is invalid");
-          }
-          timing_samples[timing].push_back(sample);
-        }
-        const auto detector_parts = frame_timings.at("detector_preprocessing").get<double>() +
-                                    frame_timings.at("detector_inference").get<double>() +
-                                    frame_timings.at("detector_postprocessing").get<double>();
-        if (frame_timings.at("detector_total").get<double>() + 0.1 < detector_parts) {
-          return invalid("Detector timing components exceed detector total");
-        }
-        const auto capture_to_completion =
-            frame_timings.at("frame_age_at_inference_start").get<double>() +
-            frame_timings.at("estimator_end_to_end").get<double>();
-        if (!approximately_equal(
-                capture_to_completion,
-                frame_timings.at("capture_delivery_to_pose_completion").get<double>())) {
-          return invalid("Capture-to-completion timing is inconsistent");
-        }
-      }
-      if (phase.at("no_pose_frames").get<std::uint64_t>() != frames - pose_available ||
-          phase.at("pose_available_frames").get<std::uint64_t>() != pose_available ||
-          phase.at("usable_pose_frames").get<std::uint64_t>() != usable_pose ||
-          phase.at("full_body_complete_frames").get<std::uint64_t>() != full_body) {
-        return invalid(std::string(phase_name) + " pose counts are inconsistent");
-      }
-      const auto& aggregate_coverage = phase.at("landmark_coverage");
-      for (std::size_t index = 0; index < body_regions.size(); ++index) {
-        const auto& region = aggregate_coverage.at(std::string(body_regions[index].name));
-        if (region.at("left_available_frames").get<std::uint64_t>() != left[index] ||
-            region.at("right_available_frames").get<std::uint64_t>() != right[index] ||
-            region.at("complete_frames").get<std::uint64_t>() != complete[index]) {
-          return invalid(std::string(phase_name) + " landmark coverage counts are inconsistent");
-        }
-      }
-      const auto elapsed = phase.at("elapsed_seconds").get<double>();
-      const auto throughput = phase.at("throughput_fps").get<double>();
-      const auto useful_throughput = phase.at("useful_pose_throughput_fps").get<double>();
-      if (!finite_nonnegative(elapsed) || !finite_nonnegative(throughput) ||
-          !finite_nonnegative(useful_throughput) || (frames > 0 && elapsed <= 0.0) ||
-          (elapsed > 0.0 &&
-           (!approximately_equal(throughput, static_cast<double>(frames) / elapsed) ||
-            !approximately_equal(useful_throughput, static_cast<double>(usable_pose) / elapsed)))) {
-        return invalid(std::string(phase_name) + " throughput or elapsed time is inconsistent");
-      }
-      const auto& timings = phase.at("timings");
-      for (const auto* timing : timing_names) {
-        const auto& summary = timings.at(timing);
-        const auto samples = summary.at("samples").get<std::size_t>();
-        const auto median = summary.at("median_ms").get<double>();
-        const auto p95 = summary.at("p95_ms").get<double>();
-        const auto p99 = summary.at("p99_ms").get<double>();
-        auto recomputed = timing_samples[timing];
-        std::ranges::sort(recomputed);
-        const auto percentile = [&recomputed](double probability) {
-          if (recomputed.empty()) {
-            return 0.0;
-          }
-          const auto position = probability * static_cast<double>(recomputed.size() - 1);
-          const auto lower = static_cast<std::size_t>(std::floor(position));
-          const auto upper = static_cast<std::size_t>(std::ceil(position));
-          const auto fraction = position - static_cast<double>(lower);
-          return recomputed[lower] * (1.0 - fraction) + recomputed[upper] * fraction;
-        };
-        if (samples != frames || !finite_nonnegative(median) || !finite_nonnegative(p95) ||
-            !finite_nonnegative(p99) || median > p95 || p95 > p99 ||
-            (samples == 0 && (median != 0.0 || p95 != 0.0 || p99 != 0.0)) ||
-            !approximately_equal(median, percentile(0.5)) ||
-            !approximately_equal(p95, percentile(0.95)) ||
-            !approximately_equal(p99, percentile(0.99))) {
-          return invalid(std::string(phase_name) + " timing summary is inconsistent");
-        }
-      }
-      return Status::success();
-    };
-    const auto warmup_validation = validate_phase(warmup, expected_warmup, "Warm-up");
-    if (!warmup_validation.ok()) {
-      return warmup_validation;
-    }
-    const auto measured_validation = validate_phase(measured, expected_measured, "Measured");
-    if (!measured_validation.ok()) {
-      return measured_validation;
-    }
-    const auto& status = report.at("status");
-    const auto success = status.at("success").get<bool>();
-    const auto error_count = status.at("error_count").get<std::uint64_t>();
-    const auto deadline_exceeded = status.at("deadline_exceeded").get<bool>();
-    const auto& terminal_error = status.at("terminal_error");
-    if (success) {
-      if (error_count != 0 || deadline_exceeded || !terminal_error.is_null() ||
-          warmup.at("frames_processed").get<std::size_t>() != expected_warmup ||
-          (!duration_mode &&
-           measured.at("frames_processed").get<std::size_t>() != expected_measured) ||
-          (duration_mode && measured.at("elapsed_seconds").get<double>() + 1.0e-6 <
-                                report.at("configuration").at("duration_seconds").get<double>()) ||
-          !model.at("checksums_verified").get<bool>()) {
-        return invalid("Successful benchmark report violates completion invariants");
-      }
-    } else {
-      if (error_count == 0 || !terminal_error.is_object() ||
-          terminal_error.at("code").get<std::string>().empty() ||
-          terminal_error.at("stage").get<std::string>().empty() ||
-          terminal_error.at("message").get<std::string>().empty()) {
-        return invalid("Failed benchmark report lacks a terminal error");
-      }
-      if (deadline_exceeded && terminal_error.at("code") != "timeout") {
-        return invalid("Deadline failure does not carry a timeout error");
-      }
-      if (measured.at("frames_processed").get<std::size_t>() > 0 &&
-          warmup.at("frames_processed").get<std::size_t>() != expected_warmup) {
-        return invalid("Measured samples exist before warm-up completed");
-      }
-    }
-    const auto frames_skipped = report.at("results").at("frames_skipped").get<std::uint64_t>();
-    if ((success && frames_skipped != derived_skips) ||
-        (mode == "deterministic" && frames_skipped != 0)) {
-      return invalid("Benchmark skipped-frame evidence is inconsistent");
-    }
-    if (previous_sequence.has_value() &&
-        report.at("results").at("source_frames_delivered").get<std::uint64_t>() <
-            *previous_sequence) {
-      return invalid("Source delivery count precedes recorded frame sequences");
-    }
-    const auto& input = report.at("input");
-    if (!input.at("source_sha256").is_null() && !valid_hash(input.at("source_sha256"))) {
-      return invalid("Benchmark input hash is malformed");
-    }
-    if (success && input.at("kind") == "video" && !valid_hash(input.at("source_sha256"))) {
-      return invalid("Successful video benchmark lacks a valid source hash");
-    }
-    const auto strict_assignment = model.at("strict_provider_assignment").get<bool>();
-    const auto& provider_evidence = model.at("provider_evidence");
-    if (provider_evidence.at("cuda_graph_execution").get<bool>()) {
-      return invalid("Benchmark incorrectly claims CUDA graph execution");
-    }
-    if (provider == "CUDAExecutionProvider" && success) {
-      if (!strict_assignment || provider_evidence.at("method") != "onnxruntime-profiling" ||
-          !provider_evidence.at("verified").get<bool>() ||
-          provider_evidence.at("profiles").size() != 2) {
-        return invalid("Successful CUDA benchmark lacks strict profiling evidence");
-      }
-      std::array<bool, 2> sessions{};
-      for (const auto& profile : provider_evidence.at("profiles")) {
-        const auto session = profile.at("session").get<std::string>();
-        if (session == "detector") {
-          sessions[0] = true;
-        } else if (session == "pose") {
-          sessions[1] = true;
-        } else {
-          return invalid("Provider profile identifies an unknown session");
-        }
-        if (!valid_hash(profile.at("sha256")) ||
-            profile.at("cuda_node_events").get<std::uint64_t>() == 0 ||
-            profile.at("cpu_node_events").get<std::uint64_t>() != 0 ||
-            profile.at("other_node_events").get<std::uint64_t>() != 0 ||
-            !profile.at("verified").get<bool>()) {
-          return invalid("CUDA provider profile contains unverified node assignment");
-        }
-        const auto artifact_validation = validate_strict_profile_reference(profile);
-        if (!artifact_validation.ok()) {
-          return artifact_validation;
-        }
-      }
-      if (!sessions[0] || !sessions[1]) {
-        return invalid("CUDA provider profiles do not cover both model sessions");
-      }
-    } else if (provider == "CUDAExecutionProvider+CPUExecutionProvider" && success) {
-      if (strict_assignment) {
-        return invalid("Audited CUDA benchmark claims strict provider assignment");
-      }
-      const auto artifact_validation = validate_audited_profile_evidence(
-          provider_evidence, model.at("detector_sha256").get<std::string>(),
-          model.at("pose_sha256").get<std::string>(),
-          report.at("build").at("onnxruntime").get<std::string>());
-      if (!artifact_validation.ok()) {
-        return artifact_validation;
-      }
-    } else if (provider != "CUDAExecutionProvider" && strict_assignment) {
-      return invalid("Non-CUDA report claims strict CUDA provider assignment");
-    }
-    const auto& runtime = report.at("runtime");
-    const auto profiling_enabled =
-        report.at("configuration").at("production_profiling_enabled").get<bool>();
-    const auto& production_profiling = runtime.at("production_profiling");
-    if (production_profiling.at("enabled").get<bool>() != profiling_enabled) {
-      return invalid("Production profiling configuration is inconsistent");
-    }
-    if (profiling_enabled && success) {
-      if (policy != "cuda-audited" || !production_profiling.at("provider_evidence").is_object()) {
-        return invalid("Profiled production run lacks audited CUDA evidence");
-      }
-      const auto production_validation = validate_audited_profile_evidence(
-          production_profiling.at("provider_evidence"),
-          model.at("detector_sha256").get<std::string>(),
-          model.at("pose_sha256").get<std::string>(),
-          report.at("build").at("onnxruntime").get<std::string>());
-      if (!production_validation.ok()) {
-        return production_validation;
-      }
-    } else if (!profiling_enabled && !production_profiling.at("provider_evidence").is_null()) {
-      return invalid("Unprofiled production run contains profiling evidence");
-    }
-    if (!runtime.at("initialization_ms").is_null() &&
-        !finite_nonnegative(runtime.at("initialization_ms").get<double>())) {
-      return invalid("Initialization timing is invalid");
-    }
-    if (!runtime.at("first_inference_ms").is_null() &&
-        !finite_nonnegative(runtime.at("first_inference_ms").get<double>())) {
-      return invalid("First-inference timing is invalid");
-    }
-  } catch (const nlohmann::json::exception& exception) {
-    return {ErrorCode::invalid_data,
-            "Benchmark report is missing required evidence: " + std::string(exception.what())};
-  }
-  return Status::success();
-}
 
-int validate_report_file(const std::filesystem::path& path) {
-  const auto report = load_json(path);
-  if (!report) {
-    std::cerr << report.error().message << '\n';
-    return 1;
-  }
-  const auto validation = validate_report(report.value());
-  if (!validation.ok()) {
-    std::cerr << validation.message << '\n';
-    return 1;
-  }
-  std::cout << "Benchmark report is valid: " << path << '\n';
-  return 0;
-}
-
-int compare_parity_reports(const Options& options) {
-  const auto cpu = load_json(options.compare_cpu_report);
-  const auto cuda = load_json(options.compare_cuda_report);
-  if (!cpu || !cuda) {
-    std::cerr << (cpu ? cuda.error().message : cpu.error().message) << '\n';
-    return 1;
-  }
-  const auto cpu_validation = validate_report(cpu.value());
-  const auto cuda_validation = validate_report(cuda.value());
-  if (!cpu_validation.ok() || !cuda_validation.ok()) {
-    std::cerr << (cpu_validation.ok() ? cuda_validation.message : cpu_validation.message) << '\n';
-    return 1;
-  }
-  constexpr double minimum_bbox_iou = 0.995;
-  constexpr double maximum_coordinate_difference = 0.002;
-  constexpr double maximum_confidence_difference = 0.005;
-  constexpr double maximum_knee_angle_difference = 2.0;
-  nlohmann::json errors = nlohmann::json::array();
-  const auto& cpu_model = cpu.value().at("model");
-  const auto& cuda_model = cuda.value().at("model");
-  if (!cpu.value().at("status").at("success").get<bool>() ||
-      !cuda.value().at("status").at("success").get<bool>() ||
-      cpu_model.at("execution_policy") != "cpu" ||
-      cuda_model.at("execution_policy") != "cuda-audited" ||
-      cpu_model.at("detector_sha256") != cuda_model.at("detector_sha256") ||
-      cpu_model.at("pose_sha256") != cuda_model.at("pose_sha256") ||
-      cpu.value().at("input").at("source_sha256") != cuda.value().at("input").at("source_sha256") ||
-      cpu.value().at("configuration").at("mode") != "deterministic" ||
-      cuda.value().at("configuration").at("mode") != "deterministic") {
-    errors.push_back("Reports do not describe successful comparable CPU and cuda-audited runs");
-  }
-  const auto& cpu_frames = cpu.value().at("measured").at("processed_frames");
-  const auto& cuda_frames = cuda.value().at("measured").at("processed_frames");
-  if (cpu_frames.size() != cuda_frames.size() || cpu_frames.empty()) {
-    errors.push_back("Parity reports do not contain the same nonzero measured frame count");
-  }
-  std::size_t detection_mismatches{};
-  std::size_t pose_mismatches{};
-  std::size_t landmark_availability_mismatches{};
-  std::size_t full_body_coverage_mismatches{};
-  double minimum_observed_iou{1.0};
-  double maximum_observed_coordinate_difference{};
-  double maximum_observed_confidence_difference{};
-  double maximum_observed_knee_angle_difference{};
-  const auto count = (std::min)(cpu_frames.size(), cuda_frames.size());
-  for (std::size_t index = 0; index < count; ++index) {
-    const auto& first = cpu_frames[index];
-    const auto& second = cuda_frames[index];
-    if (first.at("source_frame_index") != second.at("source_frame_index") ||
-        first.at("source_media_timestamp_us") != second.at("source_media_timestamp_us")) {
-      errors.push_back("CPU and CUDA source frame identities differ at measured index " +
-                       std::to_string(index));
-      continue;
-    }
-    const auto first_detected = first.at("person_detected").get<bool>();
-    const auto second_detected = second.at("person_detected").get<bool>();
-    detection_mismatches += first_detected != second_detected ? 1 : 0;
-    if (first_detected && second_detected) {
-      const auto& first_box = first.at("selected_person");
-      const auto& second_box = second.at("selected_person");
-      const auto intersection_width = (std::max)(
-          0.0,
-          (std::min)(first_box.at("right").get<double>(), second_box.at("right").get<double>()) -
-              (std::max)(first_box.at("left").get<double>(), second_box.at("left").get<double>()));
-      const auto intersection_height = (std::max)(
-          0.0,
-          (std::min)(first_box.at("bottom").get<double>(), second_box.at("bottom").get<double>()) -
-              (std::max)(first_box.at("top").get<double>(), second_box.at("top").get<double>()));
-      const auto intersection = intersection_width * intersection_height;
-      const auto first_area =
-          (first_box.at("right").get<double>() - first_box.at("left").get<double>()) *
-          (first_box.at("bottom").get<double>() - first_box.at("top").get<double>());
-      const auto second_area =
-          (second_box.at("right").get<double>() - second_box.at("left").get<double>()) *
-          (second_box.at("bottom").get<double>() - second_box.at("top").get<double>());
-      const auto iou = intersection / (first_area + second_area - intersection);
-      minimum_observed_iou = (std::min)(minimum_observed_iou, iou);
-      maximum_observed_confidence_difference =
-          (std::max)(maximum_observed_confidence_difference,
-                     std::abs(first_box.at("confidence").get<double>() -
-                              second_box.at("confidence").get<double>()));
-    }
-    const auto first_pose = first.at("pose_available").get<bool>();
-    const auto second_pose = second.at("pose_available").get<bool>();
-    pose_mismatches += first_pose != second_pose ? 1 : 0;
-    if (first_pose && second_pose) {
-      maximum_observed_confidence_difference =
-          (std::max)(maximum_observed_confidence_difference,
-                     std::abs(first.at("pose_confidence").get<double>() -
-                              second.at("pose_confidence").get<double>()));
-    }
-    full_body_coverage_mismatches +=
-        first.at("full_body_complete") != second.at("full_body_complete") ? 1 : 0;
-    const auto& first_landmarks = first.at("landmarks");
-    const auto& second_landmarks = second.at("landmarks");
-    for (std::size_t landmark_index = 0; landmark_index < first_landmarks.size();
-         ++landmark_index) {
-      const auto& first_landmark = first_landmarks[landmark_index];
-      const auto& second_landmark = second_landmarks[landmark_index];
-      const auto first_available = first_landmark.at("available").get<bool>();
-      const auto second_available = second_landmark.at("available").get<bool>();
-      landmark_availability_mismatches += first_available != second_available ? 1 : 0;
-      if (first_available && second_available) {
-        maximum_observed_coordinate_difference = (std::max)(
-            {maximum_observed_coordinate_difference,
-             std::abs(first_landmark.at("x").get<double>() - second_landmark.at("x").get<double>()),
-             std::abs(first_landmark.at("y").get<double>() -
-                      second_landmark.at("y").get<double>())});
-        maximum_observed_confidence_difference =
-            (std::max)(maximum_observed_confidence_difference,
-                       std::abs(first_landmark.at("confidence").get<double>() -
-                                second_landmark.at("confidence").get<double>()));
-      }
-    }
-    for (const auto* side : {"left", "right"}) {
-      const auto& first_angle = first.at("projected_knee_angles_degrees").at(side);
-      const auto& second_angle = second.at("projected_knee_angles_degrees").at(side);
-      if (first_angle.is_number() != second_angle.is_number()) {
-        ++landmark_availability_mismatches;
-      } else if (first_angle.is_number()) {
-        maximum_observed_knee_angle_difference =
-            (std::max)(maximum_observed_knee_angle_difference,
-                       std::abs(first_angle.get<double>() - second_angle.get<double>()));
-      }
-    }
-  }
-  if (detection_mismatches != 0 || pose_mismatches != 0 || landmark_availability_mismatches != 0 ||
-      full_body_coverage_mismatches != 0) {
-    errors.push_back("CPU and audited CUDA availability or coverage differs");
-  }
-  if (minimum_observed_iou < minimum_bbox_iou) {
-    errors.push_back("CPU and audited CUDA bounding-box IoU is below tolerance");
-  }
-  if (maximum_observed_coordinate_difference > maximum_coordinate_difference) {
-    errors.push_back("CPU and audited CUDA landmark coordinate difference exceeds tolerance");
-  }
-  if (maximum_observed_confidence_difference > maximum_confidence_difference) {
-    errors.push_back("CPU and audited CUDA confidence difference exceeds tolerance");
-  }
-  if (maximum_observed_knee_angle_difference > maximum_knee_angle_difference) {
-    errors.push_back("CPU and audited CUDA projected knee-angle difference exceeds tolerance");
-  }
-  const nlohmann::json parity = {
-      {"schema_version", 1},
-      {"status", {{"success", errors.empty()}, {"errors", errors}}},
-      {"cpu_report", std::filesystem::absolute(options.compare_cpu_report).string()},
-      {"cuda_report", std::filesystem::absolute(options.compare_cuda_report).string()},
-      {"model",
-       {{"detector_sha256", cpu_model.at("detector_sha256")},
-        {"pose_sha256", cpu_model.at("pose_sha256")}}},
-      {"source_sha256", cpu.value().at("input").at("source_sha256")},
-      {"frames_compared", count},
-      {"tolerances",
-       {{"minimum_bounding_box_iou", minimum_bbox_iou},
-        {"maximum_normalized_landmark_coordinate_difference", maximum_coordinate_difference},
-        {"maximum_confidence_difference", maximum_confidence_difference},
-        {"maximum_projected_knee_angle_difference_degrees", maximum_knee_angle_difference}}},
-      {"observed",
-       {{"detection_availability_mismatches", detection_mismatches},
-        {"pose_availability_mismatches", pose_mismatches},
-        {"landmark_availability_mismatches", landmark_availability_mismatches},
-        {"full_body_coverage_mismatches", full_body_coverage_mismatches},
-        {"minimum_bounding_box_iou", minimum_observed_iou},
-        {"maximum_normalized_landmark_coordinate_difference",
-         maximum_observed_coordinate_difference},
-        {"maximum_confidence_difference", maximum_observed_confidence_difference},
-        {"maximum_projected_knee_angle_difference_degrees",
-         maximum_observed_knee_angle_difference}}},
-      {"anatomical_mapping", "canonical subject-left and subject-right identities compared"},
-      {"physical_accuracy_claim", false}};
-  const auto written = write_report(options.parity_output, parity);
-  if (!written.ok()) {
-    std::cerr << written.message << '\n';
-    return 1;
-  }
-  std::cout << parity.dump(2) << '\n';
-  return errors.empty() ? 0 : 1;
-}
 
 }
 
@@ -1681,7 +928,9 @@ int run_benchmark(int argc, char** argv) {
     std::cerr << "Usage: SquatrisPoseBenchmark [--mode deterministic|realtime] [--video PATH] "
                  "[--backend mock|rtmpose] [--provider cpu|cuda-strict|cuda-audited] [--warmup N] "
                  "[--policy-manifest PATH] [--iterations N] [--duration-seconds N] "
-                 "[--loop-video true|false] [--profile-production true|false] "
+                  "[--loop-video true|false] [--simulated-source-fps FPS] "
+                  "[--profile-production true|false] "
+                  "[--recreate-audited-sessions true|false] "
                  "[--deadline-seconds N] [--output PATH] or "
                  "--validate-report PATH\n";
     return 2;
@@ -1690,7 +939,8 @@ int run_benchmark(int argc, char** argv) {
     return validate_report_file(options->validate_report);
   }
   if (!options->compare_cpu_report.empty()) {
-    return compare_parity_reports(*options);
+    return compare_parity_reports({options->compare_cpu_report, options->compare_cuda_report,
+                                   options->parity_output});
   }
   auto report = initial_report(*options);
   const auto persist = [&]() {
@@ -1841,7 +1091,9 @@ int run_benchmark(int argc, char** argv) {
   const auto format = source->format();
   report["input"]["width"] = format.width;
   report["input"]["height"] = format.height;
-  report["input"]["source_fps"] = format.negotiated_fps;
+  report["input"]["source_fps"] = format.requested_fps;
+  report["input"]["native_media_fps"] = format.negotiated_fps;
+  report["input"]["delivery_target_fps"] = format.requested_fps;
   report["warmup"] = phase_json(warmup);
   report["measured"] = phase_json(measured);
   report["results"] = {{"frames_skipped", skipped}, {"source_frames_delivered", sequence}};

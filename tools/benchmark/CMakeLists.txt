@@ -1,4 +1,4 @@
-add_executable(squatris-pose-benchmark main.cpp)
+add_executable(squatris-pose-benchmark main.cpp parity.cpp report.cpp)
 target_link_libraries(squatris-pose-benchmark PRIVATE
   squatris_backends
   squatris_core

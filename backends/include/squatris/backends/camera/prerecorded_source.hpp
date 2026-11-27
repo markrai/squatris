@@ -17,6 +17,7 @@ struct PrerecordedSourceConfig {
   std::filesystem::path path;
   bool pace_realtime{true};
   bool loop{};
+  std::optional<double> simulated_fps;
 };
 
 class PrerecordedSource final : public input::IFrameSource {
