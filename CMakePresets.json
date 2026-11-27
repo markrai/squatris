@@ -71,41 +71,117 @@
         "SQUATRIS_ONNXRUNTIME_ROOT": "$env{SQUATRIS_ONNXRUNTIME_ROOT}",
         "SQUATRIS_WARNINGS_AS_ERRORS": "ON"
       }
+    },
+    {
+      "name": "ci-windows-release",
+      "inherits": "windows-release"
+    },
+    {
+      "name": "ci-windows-clang-tidy",
+      "inherits": "windows-release",
+      "cacheVariables": {
+        "CMAKE_CXX_CLANG_TIDY": "clang-tidy"
+      }
+    },
+    {
+      "name": "ci-windows-onnx-release",
+      "inherits": "windows-onnx-release"
     }
   ],
   "buildPresets": [
-    {"name": "windows-debug", "configurePreset": "windows-debug"},
-    {"name": "windows-release", "configurePreset": "windows-release"},
-    {"name": "windows-onnx-release", "configurePreset": "windows-onnx-release"},
-    {"name": "windows-cuda-debug", "configurePreset": "windows-cuda-debug"},
-    {"name": "windows-cuda-release", "configurePreset": "windows-cuda-release"}
+    {
+      "name": "windows-debug",
+      "configurePreset": "windows-debug"
+    },
+    {
+      "name": "windows-release",
+      "configurePreset": "windows-release"
+    },
+    {
+      "name": "windows-onnx-release",
+      "configurePreset": "windows-onnx-release"
+    },
+    {
+      "name": "windows-cuda-debug",
+      "configurePreset": "windows-cuda-debug"
+    },
+    {
+      "name": "windows-cuda-release",
+      "configurePreset": "windows-cuda-release"
+    },
+    {
+      "name": "ci-windows-release",
+      "configurePreset": "ci-windows-release"
+    },
+    {
+      "name": "ci-windows-clang-tidy",
+      "configurePreset": "ci-windows-clang-tidy"
+    },
+    {
+      "name": "ci-windows-onnx-release",
+      "configurePreset": "ci-windows-onnx-release"
+    }
   ],
   "testPresets": [
     {
       "name": "windows-debug",
       "configurePreset": "windows-debug",
-      "output": {"outputOnFailure": true}
+      "output": {
+        "outputOnFailure": true
+      }
     },
     {
       "name": "windows-release",
       "configurePreset": "windows-release",
-      "output": {"outputOnFailure": true}
+      "output": {
+        "outputOnFailure": true
+      }
     },
     {
       "name": "windows-onnx-release",
       "configurePreset": "windows-onnx-release",
-      "output": {"outputOnFailure": true}
+      "output": {
+        "outputOnFailure": true
+      }
     },
     {
       "name": "windows-cuda-debug",
       "configurePreset": "windows-cuda-debug",
-      "output": {"outputOnFailure": true}
+      "output": {
+        "outputOnFailure": true
+      }
     },
     {
       "name": "windows-hardware",
       "configurePreset": "windows-cuda-release",
-      "filter": {"include": {"label": "hardware-required"}},
-      "output": {"outputOnFailure": true}
+      "filter": {
+        "include": {
+          "label": "hardware-required"
+        }
+      },
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "ci-windows-release",
+      "configurePreset": "ci-windows-release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      }
+    },
+    {
+      "name": "ci-windows-onnx-release",
+      "configurePreset": "ci-windows-onnx-release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      }
     }
   ]
 }

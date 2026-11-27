@@ -17,6 +17,10 @@ The production path is C++20, OpenCV camera capture, RTMPose through ONNX Runtim
 - Deterministic sequential and paced real-time JSON benchmarks with source/frame evidence, deadlines, report validation, warm-up separation, and latency percentiles.
 - Deterministic GoogleTest coverage and Windows CI.
 
+## Run CI locally
+
+Run `ci.bat` in Command Prompt or PowerShell, or `./ci.sh` in Git Bash on Windows. Both run all three GitHub Windows CI jobs through `scripts/ci.ps1`. See [TESTING.md](docs/TESTING.md) for prerequisites and individual jobs.
+
 ## Quick start on Windows
 
 Run these commands from an x64 Native Tools PowerShell for Visual Studio:
