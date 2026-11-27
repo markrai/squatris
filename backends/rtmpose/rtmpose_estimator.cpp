@@ -26,6 +26,13 @@
 #include <onnxruntime_cxx_api.h>
 #endif
 
+#if SQUATRIS_HAS_ONNXRUNTIME && defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 namespace squatris::backends::rtmpose {
 
 #if SQUATRIS_HAS_ONNXRUNTIME
@@ -202,6 +209,46 @@ bool provider_available(std::string_view expected) {
   return std::ranges::find(providers, expected) != providers.end();
 }
 
+Result<nlohmann::json> loaded_runtime_artifacts() {
+#ifdef _WIN32
+  constexpr std::array<const wchar_t*, 3> required_modules{
+      L"onnxruntime.dll", L"onnxruntime_providers_shared.dll",
+      L"onnxruntime_providers_cuda.dll"};
+  nlohmann::json artifacts = nlohmann::json::array();
+  for (const auto* module_name : required_modules) {
+    const auto module = GetModuleHandleW(module_name);
+    if (module == nullptr) {
+      return Status{ErrorCode::initialization_failed,
+                    "Required ONNX Runtime module is not loaded"};
+    }
+    std::vector<wchar_t> buffer(32768);
+    const auto length = GetModuleFileNameW(module, buffer.data(), static_cast<DWORD>(buffer.size()));
+    if (length == 0 || length >= buffer.size()) {
+      return Status{ErrorCode::io_error, "Loaded ONNX Runtime module path could not be read"};
+    }
+    const std::filesystem::path path(std::wstring(buffer.data(), length));
+    const auto hash = crypto::sha256_file(path);
+    if (!hash) {
+      return hash.error();
+    }
+    std::error_code size_error;
+    const auto size = std::filesystem::file_size(path, size_error);
+    if (size_error) {
+      return Status{ErrorCode::io_error,
+                    "Loaded ONNX Runtime module size could not be read: " + path.string()};
+    }
+    artifacts.push_back({{"name", path.filename().string()},
+                         {"path", std::filesystem::absolute(path).string()},
+                         {"size_bytes", size},
+                         {"sha256", hash.value()}});
+  }
+  return artifacts;
+#else
+  return Status{ErrorCode::unavailable,
+                "Loaded ONNX Runtime artifact discovery is implemented for Windows"};
+#endif
+}
+
 std::vector<float> bgr_to_nchw(const cv::Mat& image) {
   std::vector<float> tensor(static_cast<std::size_t>(image.rows) * image.cols * 3);
   const auto plane = static_cast<std::size_t>(image.rows) * image.cols;
@@ -281,7 +328,10 @@ struct RtmposeEstimator::Impl {
                              pose_outputs);
     if (config.provider == ExecutionProvider::cuda_audited) {
       verify_audited_policy();
-      recreate_production_sessions();
+      if (!config.production_profiling_output_prefix.empty() ||
+          config.recreate_audited_sessions_for_experiment) {
+        recreate_production_sessions();
+      }
     }
   }
 
@@ -329,9 +379,16 @@ struct RtmposeEstimator::Impl {
       throw std::runtime_error(detector_hash ? pose_hash.error().message
                                              : detector_hash.error().message);
     }
+    const auto artifacts = loaded_runtime_artifacts();
+    if (!artifacts) {
+      throw std::runtime_error(artifacts.error().message);
+    }
+    const auto runtime_version = Ort::GetVersionString();
     const auto evidence = analyze_provider_profiles(
         end_profiling(), config.provider_policy_manifest, detector_hash.value(), pose_hash.value(),
-        SQUATRIS_ONNXRUNTIME_VERSION);
+        runtime_version, SQUATRIS_ONNXRUNTIME_VERSION, artifacts.value(),
+        config.production_profiling_output_prefix.empty() &&
+            !config.recreate_audited_sessions_for_experiment);
     if (!evidence) {
       throw std::runtime_error(evidence.error().message);
     }
@@ -383,6 +440,9 @@ struct RtmposeEstimator::Impl {
   std::optional<std::vector<ProviderProfile>> profiles;
   std::optional<std::vector<ProviderProfile>> production_profiles;
   std::optional<nlohmann::json> policy_evidence;
+  std::vector<float> synthetic_detector_input =
+      std::vector<float>(3U * detector_height * detector_width);
+  std::vector<float> synthetic_pose_input = std::vector<float>(3U * pose_height * pose_width);
 };
 
 #else
@@ -713,6 +773,51 @@ Result<nlohmann::json> RtmposeEstimator::provider_policy_evidence() const {
     return Status{ErrorCode::invalid_argument, "No audited provider policy evidence is available"};
   }
   return *implementation_->policy_evidence;
+#else
+  return Status{ErrorCode::unavailable, "RTMPose backend is not compiled"};
+#endif
+}
+
+Result<ModelExecutionTimings> RtmposeEstimator::infer_synthetic_tensors() {
+#if SQUATRIS_HAS_ONNXRUNTIME
+  if (!implementation_) {
+    return Status{ErrorCode::initialization_failed, "RTMPose backend is not initialized"};
+  }
+  try {
+    constexpr std::array<std::int64_t, 4> detector_shape{1, 3, detector_height, detector_width};
+    constexpr std::array<std::int64_t, 4> pose_shape{1, 3, pose_height, pose_width};
+    auto memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+    auto detector_tensor = Ort::Value::CreateTensor<float>(
+        memory, implementation_->synthetic_detector_input.data(),
+        implementation_->synthetic_detector_input.size(), detector_shape.data(),
+        detector_shape.size());
+    auto pose_tensor = Ort::Value::CreateTensor<float>(
+        memory, implementation_->synthetic_pose_input.data(),
+        implementation_->synthetic_pose_input.size(), pose_shape.data(), pose_shape.size());
+    const auto started = pose::Clock::now();
+    const auto detector_started = pose::Clock::now();
+    auto detector_outputs = implementation_->detector.Run(
+        Ort::RunOptions{nullptr}, implementation_->detector_inputs.values.data(), &detector_tensor,
+        1, implementation_->detector_outputs.values.data(),
+        implementation_->detector_outputs.values.size());
+    const auto detector_completed = pose::Clock::now();
+    auto pose_outputs = implementation_->pose.Run(
+        Ort::RunOptions{nullptr}, implementation_->pose_inputs.values.data(), &pose_tensor, 1,
+        implementation_->pose_outputs.values.data(), implementation_->pose_outputs.values.size());
+    const auto completed = pose::Clock::now();
+    if (detector_outputs.size() != implementation_->detector_outputs.values.size() ||
+        pose_outputs.size() != implementation_->pose_outputs.values.size()) {
+      return Status{ErrorCode::inference_failed,
+                    "Synthetic tensor inference returned an unexpected output count"};
+    }
+    return ModelExecutionTimings{
+        std::chrono::duration_cast<std::chrono::microseconds>(detector_completed -
+                                                              detector_started),
+        std::chrono::duration_cast<std::chrono::microseconds>(completed - detector_completed),
+        std::chrono::duration_cast<std::chrono::microseconds>(completed - started)};
+  } catch (const Ort::Exception& exception) {
+    return Status{ErrorCode::inference_failed, exception.what()};
+  }
 #else
   return Status{ErrorCode::unavailable, "RTMPose backend is not compiled"};
 #endif

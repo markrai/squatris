@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -14,6 +15,12 @@ namespace squatris::backends::rtmpose {
 
 enum class ExecutionProvider { cpu, cuda_strict, cuda_audited };
 
+struct ModelExecutionTimings {
+  std::chrono::microseconds detector_inference{};
+  std::chrono::microseconds pose_inference{};
+  std::chrono::microseconds total{};
+};
+
 struct RtmposeConfig {
   std::filesystem::path detector_model;
   std::filesystem::path pose_model;
@@ -25,6 +32,7 @@ struct RtmposeConfig {
   std::filesystem::path production_profiling_output_prefix;
   std::filesystem::path provider_policy_manifest;
   bool verbose_provider_diagnostics{};
+  bool recreate_audited_sessions_for_experiment{};
 };
 
 class RtmposeEstimator final : public squatris::inference::IPoseEstimator {
@@ -45,6 +53,7 @@ public:
   [[nodiscard]] Result<std::vector<ProviderProfile>> finalize_provider_profiling();
   [[nodiscard]] Result<std::vector<ProviderProfile>> finalize_production_profiling();
   [[nodiscard]] Result<nlohmann::json> provider_policy_evidence() const;
+  [[nodiscard]] Result<ModelExecutionTimings> infer_synthetic_tensors();
 
 private:
   struct Impl;

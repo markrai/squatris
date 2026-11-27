@@ -143,7 +143,13 @@ Result<std::shared_ptr<const input::Frame>> SequentialFrameSource::next_frame() 
   } else {
     try {
       if (!implementation_->capture.read(image) || image.empty()) {
-        return Status{ErrorCode::end_of_stream, "Sequential video completed"};
+        if (!config_.loop || frames_in_loop_ == 0 ||
+            !implementation_->capture.set(cv::CAP_PROP_POS_FRAMES, 0.0) ||
+            !implementation_->capture.read(image) || image.empty()) {
+          return Status{ErrorCode::end_of_stream, "Sequential video completed"};
+        }
+        ++source_loop_index_;
+        frames_in_loop_ = 0;
       }
       const auto position = implementation_->capture.get(cv::CAP_PROP_POS_FRAMES);
       if (std::isfinite(position) && position >= 1.0) {
@@ -165,6 +171,10 @@ Result<std::shared_ptr<const input::Frame>> SequentialFrameSource::next_frame() 
   auto frame = std::make_shared<input::Frame>();
   frame->sequence = ++delivered_;
   frame->source_frame_index = source_index;
+  if (config_.loop && !config_.video_path.empty()) {
+    frame->source_loop_index = source_loop_index_;
+  }
+  ++frames_in_loop_;
   frame->source_media_timestamp = media_timestamp;
   frame->width = static_cast<std::uint32_t>(image.cols);
   frame->height = static_cast<std::uint32_t>(image.rows);

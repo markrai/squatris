@@ -1,6 +1,7 @@
 add_library(squatris_core STATIC
   crypto/sha256.cpp
   inference/tracking_assessment.cpp
+  io/atomic_file.cpp
   pose/geometry.cpp
   pose/mapping.cpp
   pose/pose.cpp

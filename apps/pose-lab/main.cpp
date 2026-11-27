@@ -7,7 +7,6 @@
 #include <cstdio>
 #include <exception>
 #include <filesystem>
-#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <memory>
@@ -30,15 +29,9 @@
 #include "squatris/backends/inference/mock_pose_estimator.hpp"
 #include "squatris/backends/rtmpose/rtmpose_estimator.hpp"
 #include "squatris/core/inference/tracking_assessment.hpp"
+#include "squatris/core/io/atomic_file.hpp"
 #include "squatris/core/metrics/latency_statistics.hpp"
 #include "squatris/core/pose/geometry.hpp"
-
-#ifdef _WIN32
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#endif
 
 namespace {
 
@@ -63,6 +56,7 @@ struct Options {
   std::filesystem::path policy_manifest{"config/rtmpose-cuda-policy.json"};
   std::filesystem::path provider_evidence_directory{"qualification/pose-lab"};
   std::uint32_t freshness_ms{250};
+  std::uint32_t gui_smoke_seconds{};
   std::size_t maximum_consecutive_failures{3};
 };
 
@@ -124,6 +118,9 @@ std::optional<Options> parse_options(int argc, char** argv) {
         if (argument == "--freshness-ms") {
           return parse_number(*value, options.freshness_ms);
         }
+        if (argument == "--gui-smoke-seconds") {
+          return parse_number(*value, options.gui_smoke_seconds);
+        }
         if (argument == "--max-inference-failures") {
           return parse_number(*value, options.maximum_consecutive_failures);
         }
@@ -149,7 +146,7 @@ std::optional<Options> parse_options(int argc, char** argv) {
         options.provider_evidence_directory = *value;
       } else if (argument != "--camera" && argument != "--width" && argument != "--height" &&
                  argument != "--fps" && argument != "--freshness-ms" &&
-                 argument != "--max-inference-failures") {
+                 argument != "--gui-smoke-seconds" && argument != "--max-inference-failures") {
         std::cerr << "Unknown argument: " << argument << '\n';
         return std::nullopt;
       }
@@ -170,6 +167,7 @@ void print_help() {
             << "  --backend rtmpose|mock --provider cpu|cuda-strict|cuda-audited\n"
             << "  --detector PATH --pose PATH --policy-manifest PATH\n"
             << "  --provider-evidence-dir PATH\n"
+            << "  --gui-smoke-seconds N (opt-in native-window smoke with automatic exit)\n"
             << "  --freshness-ms N --max-inference-failures N\n"
             << "Keys: Q/Esc exit, S skeleton, D diagnostics, M mirror preview, F sync mode\n";
 }
@@ -230,42 +228,11 @@ make_estimator(const Options& options) {
       return evidence.error();
     }
     const auto output = options.provider_evidence_directory / "pose-lab-provider-evidence.json";
-    const auto temporary = output.string() + ".tmp." +
-                           std::to_string(std::chrono::steady_clock::now()
-                                              .time_since_epoch()
-                                              .count());
-    const auto remove_temporary = [&] {
-      std::error_code ignored;
-      std::filesystem::remove(temporary, ignored);
-    };
-    {
-      std::ofstream stream(temporary, std::ios::binary | std::ios::trunc);
-      if (!stream) {
-        remove_temporary();
-        return Status{ErrorCode::io_error, "Could not create Pose Lab provider evidence"};
-      }
-      stream << evidence.value().dump(2) << '\n';
-      stream.flush();
-      if (!stream) {
-        stream.close();
-        remove_temporary();
-        return Status{ErrorCode::io_error, "Could not write Pose Lab provider evidence"};
-      }
+    const auto written =
+        squatris::io::write_text_atomically(output, evidence.value().dump(2) + '\n');
+    if (!written.ok()) {
+      return written;
     }
-#ifdef _WIN32
-    if (!MoveFileExW(std::filesystem::path(temporary).c_str(), output.c_str(),
-                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-      remove_temporary();
-      return Status{ErrorCode::io_error, "Could not atomically publish Pose Lab provider evidence"};
-    }
-#else
-    std::error_code replace_error;
-    std::filesystem::rename(temporary, output, replace_error);
-    if (replace_error) {
-      remove_temporary();
-      return Status{ErrorCode::io_error, "Could not atomically publish Pose Lab provider evidence"};
-    }
-#endif
     std::cout << "Verified cuda-audited provider policy; evidence: " << output << '\n';
   }
   return std::unique_ptr<squatris::inference::IPoseEstimator>(estimator.take_value().release());
@@ -545,6 +512,13 @@ int run_pose_lab(int argc, char** argv) {
       std::chrono::milliseconds(options->freshness_ms),
       std::chrono::milliseconds(options->freshness_ms), 0.5F, 3};
   cv::namedWindow("Squatris Pose Lab", cv::WINDOW_NORMAL);
+  cv::resizeWindow("Squatris Pose Lab", static_cast<int>(options->width),
+                   static_cast<int>(options->height));
+  const auto gui_smoke_started = squatris::pose::Clock::now();
+  bool smoke_resized{};
+  bool smoke_mirror_toggled{};
+  bool smoke_diagnostics_toggled{};
+  bool smoke_skeleton_toggled{};
   while (true) {
     auto frame = source->wait_for_frame(capture_sequence, std::chrono::milliseconds(20));
     if (frame) {
@@ -611,6 +585,33 @@ int run_pose_lab(int argc, char** argv) {
       terminal_failure = true;
       break;
     }
+    if (options->gui_smoke_seconds > 0) {
+      const auto elapsed = std::chrono::duration<double>(squatris::pose::Clock::now() -
+                                                         gui_smoke_started)
+                               .count();
+      const auto duration = static_cast<double>(options->gui_smoke_seconds);
+      if (!smoke_resized && elapsed >= duration * 0.2) {
+        cv::resizeWindow("Squatris Pose Lab", (std::max)(320, static_cast<int>(options->width / 2)),
+                         (std::max)(240, static_cast<int>(options->height / 2)));
+        smoke_resized = true;
+      }
+      if (!smoke_mirror_toggled && elapsed >= duration * 0.4) {
+        mirror = !mirror;
+        smoke_mirror_toggled = true;
+      }
+      if (!smoke_diagnostics_toggled && elapsed >= duration * 0.6) {
+        diagnostics = !diagnostics;
+        smoke_diagnostics_toggled = true;
+      }
+      if (!smoke_skeleton_toggled && elapsed >= duration * 0.8) {
+        skeleton = !skeleton;
+        smoke_skeleton_toggled = true;
+      }
+      if (elapsed >= duration) {
+        std::cout << "GUI smoke completed: window, resize, mirror, diagnostics, skeleton, shutdown\n";
+        break;
+      }
+    }
     const auto key = cv::waitKey(1) & 0xFF;
     if (key == 27 || key == 'q' || key == 'Q') {
       break;
@@ -623,6 +624,9 @@ int run_pose_lab(int argc, char** argv) {
       mirror = !mirror;
     } else if (key == 'f' || key == 'F') {
       synchronized = !synchronized;
+    }
+    if (cv::getWindowProperty("Squatris Pose Lab", cv::WND_PROP_VISIBLE) < 1.0) {
+      break;
     }
   }
   inference_worker.request_stop();

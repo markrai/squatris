@@ -8,7 +8,7 @@
     {
       "name": "opencv4",
       "default-features": false,
-      "features": ["ffmpeg", "highgui", "msmf"]
+      "features": ["ffmpeg", "highgui", "msmf", "win32ui"]
     }
   ]
 }
