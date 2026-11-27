@@ -274,7 +274,8 @@ std::optional<Options> parse(int argc, char** argv) {
                  "duration is limited to one hour\n";
     return std::nullopt;
   }
-  if (options.simulated_source_fps < 0.0 || options.simulated_source_fps > 240.0 ||
+  if (!std::isfinite(options.simulated_source_fps) || options.simulated_source_fps < 0.0 ||
+      options.simulated_source_fps > 240.0 ||
       (options.simulated_source_fps > 0.0 &&
        (options.mode != BenchmarkMode::realtime || options.video.empty()))) {
     std::cerr << "Simulated source FPS must be in (0, 240] and requires prerecorded realtime mode\n";
@@ -282,7 +283,7 @@ std::optional<Options> parse(int argc, char** argv) {
   }
   if (options.profile_production &&
       (options.provider != "cuda-audited" || options.duration_seconds != 0 ||
-       options.warmup + options.iterations > 100)) {
+       options.iterations > 100 || options.warmup > 100 - options.iterations)) {
     std::cerr << "Production profiling requires cuda-audited, iteration mode, and at most 100 "
                  "total frames\n";
     return std::nullopt;

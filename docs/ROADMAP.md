@@ -4,6 +4,7 @@
 - Phase 0A.1: Foundation hardening, deterministic evidence, and TITAN qualification preparation.
 - Phase 0A.2: TITAN dependency, build, camera-capability, and strict-CUDA investigation.
 - Phase 0A.3: Audited CUDA execution, provider enforcement, and qualification recovery.
+- Phase 0A.4: Live Pose Lab restoration, sustained-latency investigation, regression hardening, and final TITAN physical acceptance.
 - Phase 0B: Comparative pose-model evaluation.
 - Phase 0C: Recorded-session infrastructure and physical pose qualification.
 - Phase 1A: Player calibration and temporal pose filtering.
@@ -22,4 +23,4 @@
 
 Future gestures will use temporal state machines, player calibration, hysteresis, confidence gating, and explicit rearming. Tracking loss will fail closed. Qualification will report intentional recall and unintended activations separately.
 
-Phase 0B must not start until Phase 0A.3 automated CUDA qualification and the remaining representative-footage and human Pose Lab observations are complete on TITAN. Hardware-independent success, a looped performance run, or a partial TITAN report does not satisfy the gate.
+Phase 0B must not start until Phase 0A.4 final automated CUDA qualification and the remaining representative-footage and human Pose Lab observations are complete on TITAN. Hardware-independent success, a looped performance run, or a partial TITAN report does not satisfy the gate.

@@ -127,7 +127,8 @@ Status validate_audited_profile_evidence(const nlohmann::json& evidence,
       const auto hash = squatris::crypto::sha256_file(path);
       std::error_code size_error;
       const auto actual_size = std::filesystem::file_size(path, size_error);
-      if (!runtime_modules.insert(name).second || !valid_hash(artifact.at("sha256")) || !hash ||
+      if (path.filename() != name || !path.is_absolute() || size == 0 ||
+          !runtime_modules.insert(name).second || !valid_hash(artifact.at("sha256")) || !hash ||
           hash.value() != artifact.at("sha256").get<std::string>() || size_error ||
           actual_size != size) {
         return invalid("Loaded ONNX Runtime artifact does not match its bound evidence");
@@ -206,10 +207,23 @@ Status validate_report(const nlohmann::json& report) {
     if (mode != "deterministic" && mode != "realtime") {
       return {ErrorCode::invalid_data, "Benchmark report has an invalid mode"};
     }
-    const auto duration_mode = !report.at("configuration").at("duration_seconds").is_null();
+    const auto& configuration = report.at("configuration");
+    const auto& input_metadata = report.at("input");
+    const auto& simulated_rate = configuration.at("simulated_source_fps");
+    const auto duration_mode = !configuration.at("duration_seconds").is_null();
+    if (!simulated_rate.is_null()) {
+      const auto rate = simulated_rate.get<double>();
+      if (!std::isfinite(rate) || rate <= 0.0 || rate > 240.0 || mode != "realtime" ||
+          input_metadata.at("kind") != "video" || input_metadata.at("pacing") != "simulated-rate") {
+        return invalid("Simulated source rate evidence is inconsistent");
+      }
+    } else if (input_metadata.at("pacing") != "native-media-timestamps") {
+      return invalid("Source pacing evidence is inconsistent");
+    }
     const auto loop_video = report.at("configuration").at("loop_video").get<bool>();
-    if (duration_mode && mode != "realtime") {
-      return invalid("Duration evidence requires realtime mode");
+    if ((duration_mode && mode != "realtime") ||
+        ((duration_mode || loop_video) && input_metadata.at("kind") != "video")) {
+      return invalid("Duration and loop evidence require a valid video mode");
     }
     const auto& model = report.at("model");
     const auto provider = model.at("execution_provider").get<std::string>();
@@ -533,11 +547,30 @@ Status validate_report(const nlohmann::json& report) {
       return invalid("Source delivery count precedes recorded frame sequences");
     }
     const auto& input = report.at("input");
+    if (success) {
+      const auto native_rate = input.at("native_media_fps").get<double>();
+      const auto delivery_rate = input.at("delivery_target_fps").get<double>();
+      const auto source_rate = input.at("source_fps").get<double>();
+      if (!std::isfinite(native_rate) || native_rate <= 0.0 ||
+          !std::isfinite(delivery_rate) || delivery_rate <= 0.0 ||
+          !approximately_equal(delivery_rate, source_rate) ||
+          !approximately_equal(delivery_rate, simulated_rate.is_null()
+                                                  ? native_rate
+                                                  : simulated_rate.get<double>())) {
+        return invalid("Source rate metadata is inconsistent");
+      }
+    }
     if (!input.at("source_sha256").is_null() && !valid_hash(input.at("source_sha256"))) {
       return invalid("Benchmark input hash is malformed");
     }
     if (success && input.at("kind") == "video" && !valid_hash(input.at("source_sha256"))) {
       return invalid("Successful video benchmark lacks a valid source hash");
+    }
+    const auto profiling_enabled = configuration.at("production_profiling_enabled").get<bool>();
+    const auto recreate_sessions =
+        configuration.at("recreate_audited_sessions_for_experiment").get<bool>();
+    if ((profiling_enabled || recreate_sessions) && policy != "cuda-audited") {
+      return invalid("CUDA diagnostic configuration requires cuda-audited");
     }
     const auto strict_assignment = model.at("strict_provider_assignment").get<bool>();
     const auto& provider_evidence = model.at("provider_evidence");
@@ -579,6 +612,10 @@ Status validate_report(const nlohmann::json& report) {
       if (strict_assignment) {
         return invalid("Audited CUDA benchmark claims strict provider assignment");
       }
+      if (provider_evidence.at("verified_sessions_retained").get<bool>() !=
+          (!profiling_enabled && !recreate_sessions)) {
+        return invalid("Audited session retention does not match diagnostic configuration");
+      }
       const auto artifact_validation = validate_audited_profile_evidence(
           provider_evidence, model.at("detector_sha256").get<std::string>(),
           model.at("pose_sha256").get<std::string>(),
@@ -590,8 +627,6 @@ Status validate_report(const nlohmann::json& report) {
       return invalid("Non-CUDA report claims strict CUDA provider assignment");
     }
     const auto& runtime = report.at("runtime");
-    const auto profiling_enabled =
-        report.at("configuration").at("production_profiling_enabled").get<bool>();
     const auto& production_profiling = runtime.at("production_profiling");
     if (production_profiling.at("enabled").get<bool>() != profiling_enabled) {
       return invalid("Production profiling configuration is inconsistent");
@@ -599,6 +634,9 @@ Status validate_report(const nlohmann::json& report) {
     if (profiling_enabled && success) {
       if (policy != "cuda-audited" || !production_profiling.at("provider_evidence").is_object()) {
         return invalid("Profiled production run lacks audited CUDA evidence");
+      }
+      if (production_profiling.at("provider_evidence").at("verified_sessions_retained").get<bool>()) {
+        return invalid("Diagnostic production profile incorrectly claims session retention");
       }
       const auto production_validation = validate_audited_profile_evidence(
           production_profiling.at("provider_evidence"),

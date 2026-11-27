@@ -91,7 +91,7 @@ Result<nlohmann::json> analyze_profile(const ProviderProfile& profile) {
   nlohmann::json memory_copies = nlohmann::json::array();
   for (const auto& event : trace.value()) {
     if (!event.is_object()) {
-      continue;
+      return Status{ErrorCode::invalid_data, "Provider profile contains a non-object event"};
     }
     if (copy_event(event)) {
       memory_copies.push_back(event);
@@ -115,7 +115,8 @@ Result<nlohmann::json> analyze_profile(const ProviderProfile& profile) {
         !args["op_name"].is_string() || args["op_name"].get_ref<const std::string&>().empty() ||
         !args.contains("node_index") || !args["node_index"].is_string() ||
         args["node_index"].get_ref<const std::string&>().empty() ||
-        !args.contains("input_type_shape") || !args.contains("output_type_shape") ||
+        !args.contains("input_type_shape") || !args["input_type_shape"].is_array() ||
+        !args.contains("output_type_shape") || !args["output_type_shape"].is_array() ||
         !event.contains("dur") || !event["dur"].is_number_unsigned()) {
       return Status{ErrorCode::invalid_data,
                     "Provider profile contains a malformed or incomplete node record"};
@@ -147,6 +148,12 @@ Result<nlohmann::json> analyze_profile(const ProviderProfile& profile) {
       if (record["provider"] != args["provider"] || record["operator"] != args["op_name"]) {
         return Status{ErrorCode::invalid_data,
                       "Provider profile contains an inconsistent stable node identity"};
+      }
+      if (record["provider"] == "CPUExecutionProvider" &&
+          (record["input_type_shape"] != args["input_type_shape"] ||
+           record["output_type_shape"] != args["output_type_shape"])) {
+        return Status{ErrorCode::invalid_data,
+                      "CPU node tensor shapes changed across provider profile events"};
       }
       record["execution_count"] = record["execution_count"].get<std::uint64_t>() + 1;
       record["total_duration_us"] = record["total_duration_us"].get<std::uint64_t>() + duration;
@@ -256,6 +263,7 @@ Result<nlohmann::json> analyze_provider_profiles(const std::vector<ProviderProfi
         errors.push_back(std::string("Provider evidence is missing session: ") + session_name);
         continue;
       }
+      const auto session_error_start = errors.size();
       auto session = analyzed_iterator->second;
       const auto& expected = manifest.value().at("sessions").at(session_name);
       const auto actual_model_hash =
@@ -273,6 +281,16 @@ Result<nlohmann::json> analyze_provider_profiles(const std::vector<ProviderProfi
       std::ranges::set_difference(approved, actual_cpu, std::inserter(missing, missing.begin()));
       session["approved_cpu_nodes"] = selected_nodes(session.at("cpu_nodes"), approved);
       session["unexpected_cpu_nodes"] = selected_nodes(session.at("cpu_nodes"), unexpected);
+      for (const auto& actual : session.at("approved_cpu_nodes")) {
+        for (const auto& approved_node : expected.at("approved_cpu_nodes")) {
+          if (node_key(actual) == node_key(approved_node) &&
+              (actual.at("input_type_shape") != approved_node.at("input_type_shape") ||
+               actual.at("output_type_shape") != approved_node.at("output_type_shape"))) {
+            errors.push_back(std::string("Approved CPU node tensor shapes do not match policy: ") +
+                             session_name + ": " + actual.at("name").get<std::string>());
+          }
+        }
+      }
       nlohmann::json missing_nodes = nlohmann::json::array();
       for (const auto& node : expected.at("approved_cpu_nodes")) {
         if (missing.contains(node_key(node))) {
@@ -308,10 +326,7 @@ Result<nlohmann::json> analyze_provider_profiles(const std::vector<ProviderProfi
       }
       session["model_sha256"] = actual_model_hash;
       session["static_graph"] = expected.at("static_graph");
-      session["verified"] = unexpected.empty() && missing.empty() &&
-                            session.at("unknown_provider_nodes").empty() &&
-                            session.at("cuda_nodes").size() == expected_cuda_count &&
-                            actual_total == expected_total_count;
+      session["verified"] = errors.size() == session_error_start;
       sessions.push_back(std::move(session));
     }
     return nlohmann::json{{"method", "onnxruntime-profile-plus-pinned-policy"},

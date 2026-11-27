@@ -104,7 +104,8 @@ void PrerecordedSource::run(const std::stop_token& stop_token) {
     frames_.close();
     return;
   }
-  const auto file_fps = capture.get(cv::CAP_PROP_FPS) > 0.0 ? capture.get(cv::CAP_PROP_FPS) : 30.0;
+  const auto reported_fps = capture.get(cv::CAP_PROP_FPS);
+  const auto file_fps = std::isfinite(reported_fps) && reported_fps > 0.0 ? reported_fps : 30.0;
   const auto pacing_fps = config_.simulated_fps.value_or(file_fps);
   {
     std::lock_guard lock(state_mutex_);
