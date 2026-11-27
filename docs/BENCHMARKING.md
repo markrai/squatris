@@ -2,10 +2,10 @@
 
 `SquatrisPoseBenchmark` runs the same estimator and execution policies used by Pose Lab.
 
-- `deterministic` decodes every prerecorded or generated frame in exact order. It never loops, skips, or drops input.
+- `deterministic` decodes every prerecorded or generated frame in exact order. By default it never loops, skips, or drops input. Explicit `--loop-video true` repeats the input with distinct loop identities for performance experiments only.
 - `realtime` paces input at the source rate and preserves one-slot latest-frame semantics. It measures sequence gaps, throughput, and latency while capture and inference compete in wall time.
 
-The execution policies are `cpu`, `cuda-strict`, and `cuda-audited`. The legacy benchmark spelling `--provider cuda` maps only to `cuda-strict`; it never silently selects the audited policy. `cuda-audited` requires `config/rtmpose-cuda-policy.json`, runs detector and pose preflight sessions, rejects any assignment outside that pinned policy, and then creates separate unprofiled production sessions.
+The execution policies are `cpu`, `cuda-strict`, and `cuda-audited`. The legacy benchmark spelling `--provider cuda` maps only to `cuda-strict`; it never silently selects the audited policy. `cuda-audited` requires `config/rtmpose-cuda-policy.json`, runs detector and pose preflight sessions, rejects observed assignments outside that pinned policy, ends profiling, and normally retains those same verified sessions for production inference. Separate sessions are created only for explicit production profiling or the diagnostic `--recreate-audited-sessions true` experiment.
 
 ## Commands
 
@@ -45,7 +45,7 @@ Five-minute paced performance run with explicit looping:
     --deadline-seconds 900 --output benchmarks\results\titan-cuda-sustained.json
 ```
 
-Duration mode stops only after the measured steady-state interval reaches the requested duration. It is available only for prerecorded real-time mode. A looped frame records its loop identity, source index, and source timestamp; index and timestamp resets are valid only when the loop identity increments by one. Deterministic comparisons never loop.
+Duration mode stops only after the measured steady-state interval reaches the requested duration. It is available only for prerecorded real-time mode. A looped frame records its loop identity, source index, and source timestamp; index and timestamp resets are valid only when the loop identity increments by one. Deterministic comparisons require identical loop configuration and frame identities. `--simulated-source-fps FPS` is a prerecorded realtime diagnostic, not evidence of actual camera delivery. Reports distinguish native media FPS from the delivery target.
 
 Measure instrumentation overhead with otherwise identical audited runs. `--profile-production true` is limited to iteration mode and at most 100 total warm-up plus measured frames so trace output remains bounded:
 
@@ -78,9 +78,9 @@ Validate a saved report and every referenced provider profile:
 
 Schema 4 records the source SHA-256, benchmark executable path and SHA-256, model hashes, runtime and build identities, execution policy, provider evidence, full canonical landmark samples, selected person boxes, pose confidence, projected knee angles, loop identities, latency samples, recomputed aggregates, and terminal status. Reports are written to a temporary file in the destination directory and atomically replaced only after the stream closes successfully.
 
-Model and session initialization and first-inference latency are separate from measured samples. Warm-up frames execute the full pipeline but never enter measured statistics. The unprofiled audited production sessions are created only after both preflight sessions pass the pinned policy. Profiling-enabled production runs are labeled explicitly and are not production-latency evidence.
+Model and session initialization and first-inference latency are separate from measured samples. Warm-up frames execute the full pipeline but never enter measured statistics. The normal unprofiled audited run retains both sessions after they pass the pinned preflight policy and profiling ends. Recreated sessions are explicitly diagnostic and are not equivalent evidence of retained-session enforcement. Profiling-enabled production runs are labeled explicitly and are not production-latency evidence.
 
-Validation independently reads and hashes referenced ONNX Runtime profiles, reconstructs their node inventories, re-applies the pinned policy, recomputes median/p95/p99 from individual frame samples, and rejects modified provider, policy, profile, node, phase, ordering, loop, aggregate, or terminal-error evidence. Unknown providers and unexpected CPU nodes fail validation.
+Validation independently reads and hashes referenced ONNX Runtime profiles, reconstructs their node inventories, re-applies the pinned policy, recomputes median/p95/p99 from individual frame samples, and rejects modified provider, policy, profile, node, phase, ordering, loop, aggregate, or terminal-error evidence. Unknown providers, unexpected CPU nodes, mismatched approved CPU tensor shapes, and inconsistent session-retention or pacing metadata fail validation. Runtime evidence records the actual loaded ONNX Runtime DLL identities. Schema 4 reports predating the Phase 0A.4 metadata extensions may require the original validator; retain those historical reports without rewriting them.
 
 The CPU/CUDA parity command requires successful deterministic reports with the same source and model hashes. It compares person availability, bounding-box IoU, canonical landmark availability and coordinates, detection/pose/landmark confidences, anatomical left/right identities, projected knee angles, and full-body coverage. The current tolerances are IoU at least `0.995`, normalized coordinate difference at most `0.002`, confidence difference at most `0.005`, and projected knee-angle difference at most `2.0` degrees. Agreement is numerical parity, not proof of physical accuracy.
 

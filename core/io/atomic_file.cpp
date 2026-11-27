@@ -20,7 +20,8 @@ Status write_text_atomically(const std::filesystem::path& path, std::string_view
   const auto suffix = std::to_string(
                           std::chrono::steady_clock::now().time_since_epoch().count()) +
                       "-" + std::to_string(std::hash<std::thread::id>{}(std::this_thread::get_id()));
-  const std::filesystem::path temporary(path.string() + ".tmp." + suffix);
+  auto temporary = path;
+  temporary += ".tmp." + suffix;
   const auto remove_temporary = [&] {
     std::error_code ignored;
     std::filesystem::remove(temporary, ignored);
@@ -32,9 +33,8 @@ Status write_text_atomically(const std::filesystem::path& path, std::string_view
       return {ErrorCode::io_error, "Could not create temporary output file: " + path.string()};
     }
     stream.write(content.data(), static_cast<std::streamsize>(content.size()));
-    stream.flush();
+    stream.close();
     if (!stream) {
-      stream.close();
       remove_temporary();
       return {ErrorCode::io_error, "Could not write temporary output file: " + path.string()};
     }

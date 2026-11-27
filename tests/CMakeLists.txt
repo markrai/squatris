@@ -7,6 +7,8 @@ add_executable(squatris-tests
   unit/latest_frame_buffer_tests.cpp
   unit/tracking_assessment_tests.cpp
   unit/rtmpose_math_tests.cpp
+  unit/provider_audit_tests.cpp
+  unit/atomic_file_tests.cpp
   integration/pipeline_tests.cpp
 )
 target_link_libraries(squatris-tests PRIVATE
@@ -40,6 +42,14 @@ add_test(NAME squatris-benchmark-realtime-smoke
 add_test(NAME squatris-benchmark-realtime-report-validation
   COMMAND squatris-pose-benchmark --validate-report
           ${CMAKE_CURRENT_BINARY_DIR}/benchmark-realtime-smoke.json
+)
+add_test(NAME squatris-benchmark-rejects-nonfinite-source-rate
+  COMMAND squatris-pose-benchmark --mode realtime --backend mock --video unused.mp4
+          --simulated-source-fps nan
+)
+set_tests_properties(squatris-benchmark-rejects-nonfinite-source-rate PROPERTIES
+  LABELS "integration;hardware-independent"
+  WILL_FAIL TRUE
 )
 add_test(NAME squatris-benchmark-rejects-unknown-provider
   COMMAND squatris-pose-benchmark --mode deterministic --backend mock --provider unknown

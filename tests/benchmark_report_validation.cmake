@@ -56,3 +56,19 @@ string(JSON corrupted SET "${corrupted}" status success false)
 string(JSON corrupted SET "${corrupted}" status error_count 1)
 string(JSON corrupted SET "${corrupted}" status terminal_error null)
 expect_rejected(terminal-error "${corrupted}")
+
+set(corrupted "${valid_report}")
+string(JSON corrupted SET "${corrupted}" configuration simulated_source_fps 60)
+expect_rejected(simulated-rate-mode "${corrupted}")
+
+set(corrupted "${valid_report}")
+string(JSON corrupted SET "${corrupted}" input delivery_target_fps 123)
+expect_rejected(delivery-rate "${corrupted}")
+
+set(corrupted "${valid_report}")
+string(JSON corrupted SET "${corrupted}" configuration loop_video true)
+expect_rejected(synthetic-loop "${corrupted}")
+
+set(corrupted "${valid_report}")
+string(JSON corrupted SET "${corrupted}" configuration recreate_audited_sessions_for_experiment true)
+expect_rejected(cpu-session-recreation "${corrupted}")

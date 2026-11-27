@@ -37,6 +37,10 @@ int compare_parity_reports(const ParityOptions& options) {
       !cuda.value().at("status").at("success").get<bool>() ||
       cpu_model.at("execution_policy") != "cpu" ||
       cuda_model.at("execution_policy") != "cuda-audited" ||
+      cpu_model.at("detector_sha256").is_null() || cpu_model.at("pose_sha256").is_null() ||
+      cpu.value().at("input").at("source_sha256").is_null() ||
+      cpu.value().at("configuration").at("loop_video") !=
+          cuda.value().at("configuration").at("loop_video") ||
       cpu_model.at("detector_sha256") != cuda_model.at("detector_sha256") ||
       cpu_model.at("pose_sha256") != cuda_model.at("pose_sha256") ||
       cpu.value().at("input").at("source_sha256") != cuda.value().at("input").at("source_sha256") ||
@@ -61,7 +65,8 @@ int compare_parity_reports(const ParityOptions& options) {
   for (std::size_t index = 0; index < count; ++index) {
     const auto& first = cpu_frames[index];
     const auto& second = cuda_frames[index];
-    if (first.at("source_frame_index") != second.at("source_frame_index") ||
+    if (first.at("source_loop_index") != second.at("source_loop_index") ||
+        first.at("source_frame_index") != second.at("source_frame_index") ||
         first.at("source_media_timestamp_us") != second.at("source_media_timestamp_us")) {
       errors.push_back("CPU and CUDA source frame identities differ at measured index " +
                        std::to_string(index));
