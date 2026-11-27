@@ -2,6 +2,36 @@
 
 Normal tests require no camera, NVIDIA GPU, CUDA, or model file.
 
+## Local CI
+
+Run every GitHub Windows CI job locally before pushing:
+
+```powershell
+.\ci.bat
+```
+
+Or from Git Bash on Windows:
+
+```bash
+./ci.sh
+```
+
+Both launchers invoke the same PowerShell 7 script as GitHub Actions. The runner initializes an x64 MSVC environment if necessary, verifies the pinned vcpkg checkout, bootstraps the repository-local copy if missing, and acquires the pinned ONNX Runtime CPU package only for the ONNX job. Existing dependency caches are reused.
+
+Select a single job for a shorter iteration:
+
+```powershell
+.\ci.bat -Job build-test
+.\ci.bat -Job clang-tidy
+.\ci.bat -Job onnx-cpu-build-test
+```
+
+Each job uses a separate `out/build/ci-windows-*` directory, fresh CMake configuration and clean project compilation. The runner stops at the first failure and returns a nonzero exit code. Both CTest jobs fail if no tests are discovered. CUDA builds, camera tests and interactive GUI smoke tests remain separate.
+
+Prerequisites: Windows x64, PowerShell 7 (`pwsh`), Git, Visual Studio with x64 C++ tools and Windows SDK, CMake 3.28+, Ninja, and Clang-Tidy for the analysis job. Visual Studio-bundled tools are discovered when absent from PATH. A supplied `VCPKG_ROOT` must already match the repository baseline. No global software or GPU settings are changed. The Bash launcher supports Git Bash/MSYS2/Cygwin on Windows, not native Linux or WSL, because the current CI uses MSVC and Windows APIs. Local compiler and SDK versions can differ from GitHub's windows-2025 image; the checks and dependency pins are shared.
+
+## Individual tests
+
 ```powershell
 ctest --preset windows-debug
 ```

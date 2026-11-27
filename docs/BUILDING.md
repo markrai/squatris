@@ -6,6 +6,10 @@ The intended host is Windows 11 x64 with MSVC and the Windows SDK. CMake 3.28 or
 
 The project does not install drivers, CUDA, cuDNN, or global packages.
 
+## Local CI
+
+Use `ci.bat` or `./ci.sh` in Git Bash on Windows for the shared GitHub CI suite. CI build trees are isolated from normal CPU/CUDA builds. See [TESTING.md](TESTING.md).
+
 ## CPU build and tests
 
 Open an x64 Native Tools PowerShell for Visual Studio, then run:
