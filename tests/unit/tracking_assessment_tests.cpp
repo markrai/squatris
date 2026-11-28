@@ -104,13 +104,21 @@ TEST(TrackingAssessment, RejectsMalformedAndFutureTimestamps) {
   EXPECT_EQ(future.reason, squatris::inference::TrackingReason::invalid_timestamp);
 
   auto future_completion = result_with_landmarks(now - 20ms, 12, 4);
-  future_completion.pose->inference_completed_at = now + 1ms;
+  if (future_completion.pose.has_value()) {
+    future_completion.pose->inference_completed_at = now + 1ms;
+  } else {
+    FAIL() << "Expected fixture pose";
+  }
   const auto completion = squatris::inference::assess_tracking(
       {&future_completion, nullptr, now, std::nullopt, 12, now}, {});
   EXPECT_EQ(completion.reason, squatris::inference::TrackingReason::invalid_timestamp);
 
   auto reversed = result_with_landmarks(now - 20ms, 13, 4);
-  reversed.pose->inference_completed_at = now - 21ms;
+  if (reversed.pose.has_value()) {
+    reversed.pose->inference_completed_at = now - 21ms;
+  } else {
+    FAIL() << "Expected fixture pose";
+  }
   const auto malformed =
       squatris::inference::assess_tracking({&reversed, nullptr, now, std::nullopt, 13, now}, {});
   EXPECT_EQ(malformed.reason, squatris::inference::TrackingReason::invalid_timestamp);

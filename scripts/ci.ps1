@@ -1,11 +1,16 @@
 param(
     [ValidateSet('all', 'build-test', 'clang-tidy', 'onnx-cpu-build-test')]
     [string]$Job = 'all',
-    [string]$VcpkgRoot
+    [string]$VcpkgRoot,
+    [switch]$Quiet
 )
 
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
+. "$PSScriptRoot\ci-diagnostics.ps1"
+
+$failures = [System.Collections.Generic.List[object]]::new()
+$results = [System.Collections.Generic.List[object]]::new()
 
 function Invoke-Checked {
     param([string]$Program, [string[]]$Arguments)
@@ -81,19 +86,77 @@ function Initialize-Vcpkg {
     Write-Host "vcpkg baseline: $head"
 }
 
+function Invoke-CiStep {
+    param([string]$Name, [scriptblock]$Action)
+    $log = Join-Path $reportDirectory "$Name.log"
+    $writer = [IO.StreamWriter]::new($log, $false, [Text.UTF8Encoding]::new($false))
+    $failure = $null
+    Write-Host "  $Name"
+    try {
+        & $Action *>&1 | ForEach-Object {
+            $line = $_.ToString()
+            $writer.WriteLine($line)
+            if (-not $Quiet) {
+                Write-Host $line
+            }
+        }
+    } catch {
+        $failure = $_
+        $writer.WriteLine($_.ToString())
+    } finally {
+        $writer.Dispose()
+    }
+    if ($null -ne $failure) {
+        $diagnostics = @(Get-CiDiagnostics -Lines @(Get-Content -LiteralPath $log) -RepositoryRoot $repositoryRoot)
+        $failures.Add([pscustomobject]@{
+            Step = $Name
+            Log = $log
+            Message = $failure.Exception.Message
+            Diagnostics = $diagnostics
+        })
+        throw "Failed step: $Name"
+    }
+}
+
 function Invoke-CiJob {
     param([string]$Name, [string]$Preset, [bool]$RunTests)
     Write-Host ""
     Write-Host "=== $Name ==="
-    Invoke-Checked cmake.exe @('--fresh', '--preset', $Preset,
-        '-DBUILD_TESTING=ON', '-DSQUATRIS_BUILD_TESTS=ON',
-        '-DSQUATRIS_BUILD_APPS=ON', '-DSQUATRIS_BUILD_BENCHMARKS=ON',
-        '-DSQUATRIS_ENABLE_HARDWARE_TESTS=OFF', '-DSQUATRIS_ENABLE_GUI_SMOKE_TEST=OFF')
-    Invoke-Checked cmake.exe @('--build', '--preset', $Preset, '--clean-first')
-    if ($RunTests) {
-        Invoke-Checked ctest.exe @('--preset', $Preset)
+    try {
+        if ($Name -eq 'clang-tidy') {
+            Invoke-CiStep "$Name-prerequisites" {
+                if (-not (Get-Command clang-tidy.exe -ErrorAction SilentlyContinue)) {
+                    throw 'Clang-Tidy is required for the analysis job'
+                }
+                Invoke-Checked clang-tidy.exe @('--version')
+            }
+        }
+        if ($Name -eq 'onnx-cpu-build-test') {
+            Invoke-CiStep "$Name-prerequisites" {
+                & "$PSScriptRoot\acquire-onnxruntime.ps1" -Variant cpu
+                $env:SQUATRIS_ONNXRUNTIME_ROOT = (Resolve-Path '.deps\onnxruntime\cpu').Path
+            }
+        }
+        Invoke-CiStep "$Name-configure" {
+            Invoke-Checked cmake.exe @('--fresh', '--preset', $Preset,
+                '-DBUILD_TESTING=ON', '-DSQUATRIS_BUILD_TESTS=ON',
+                '-DSQUATRIS_BUILD_APPS=ON', '-DSQUATRIS_BUILD_BENCHMARKS=ON',
+                '-DSQUATRIS_ENABLE_HARDWARE_TESTS=OFF', '-DSQUATRIS_ENABLE_GUI_SMOKE_TEST=OFF')
+        }
+        Invoke-CiStep "$Name-build" {
+            Invoke-Checked cmake.exe @('--build', '--preset', $Preset, '--clean-first', '--', '-k', '0')
+        }
+        if ($RunTests) {
+            Invoke-CiStep "$Name-test" {
+                Invoke-Checked ctest.exe @('--preset', $Preset)
+            }
+        }
+        $results.Add([pscustomobject]@{ Job = $Name; Status = 'PASS' })
+        Write-Host "PASS: $Name"
+    } catch {
+        $results.Add([pscustomobject]@{ Job = $Name; Status = 'FAIL' })
+        Write-Host "FAIL: $Name" -ForegroundColor Red
     }
-    Write-Host "PASS: $Name"
 }
 
 if (-not $IsWindows) {
@@ -102,36 +165,75 @@ if (-not $IsWindows) {
 
 Push-Location (Join-Path $PSScriptRoot '..')
 try {
-    $selectedRoot = if ([string]::IsNullOrWhiteSpace($VcpkgRoot)) {
-        [IO.Path]::GetFullPath((Join-Path $PWD.Path '.deps\vcpkg'))
-    } else {
-        [IO.Path]::GetFullPath($VcpkgRoot, $PWD.Path)
-    }
-    Initialize-Compiler
-    if ($Job -in @('all', 'clang-tidy') -and
-        -not (Get-Command clang-tidy.exe -ErrorAction SilentlyContinue)) {
-        throw 'Clang-Tidy is required for the analysis job'
-    }
-    Initialize-Vcpkg -SelectedRoot $selectedRoot
-    Invoke-Checked cmake.exe @('--version')
-    Invoke-Checked ninja.exe @('--version')
-    if ($Job -in @('all', 'clang-tidy')) {
-        Invoke-Checked clang-tidy.exe @('--version')
+    $repositoryRoot = $PWD.Path
+    $runId = "$(Get-Date -Format 'yyyyMMdd-HHmmss')-$([Guid]::NewGuid().ToString('N').Substring(0, 8))"
+    $reportDirectory = Join-Path $repositoryRoot "out\ci-reports\$runId"
+    New-Item -ItemType Directory -Path $reportDirectory -Force | Out-Null
+    Write-Host "CI logs: $reportDirectory"
+    $setupPassed = $false
+    try {
+        Invoke-CiStep 'setup' {
+            $selectedRoot = if ([string]::IsNullOrWhiteSpace($VcpkgRoot)) {
+                [IO.Path]::GetFullPath((Join-Path $repositoryRoot '.deps\vcpkg'))
+            } else {
+                [IO.Path]::GetFullPath($VcpkgRoot, $repositoryRoot)
+            }
+            Initialize-Compiler
+            Initialize-Vcpkg -SelectedRoot $selectedRoot
+            Invoke-Checked cmake.exe @('--version')
+            Invoke-Checked ninja.exe @('--version')
+            & "$PSScriptRoot\tests\ci-diagnostics.tests.ps1"
+        }
+        $setupPassed = $true
+    } catch {
+        Write-Host 'FAIL: setup' -ForegroundColor Red
     }
 
-    if ($Job -in @('all', 'build-test')) {
-        Invoke-CiJob 'build-test' 'ci-windows-release' $true
+    if ($setupPassed) {
+        if ($Job -in @('all', 'build-test')) {
+            Invoke-CiJob 'build-test' 'ci-windows-release' $true
+        }
+        if ($Job -in @('all', 'clang-tidy')) {
+            Invoke-CiJob 'clang-tidy' 'ci-windows-clang-tidy' $false
+        }
+        if ($Job -in @('all', 'onnx-cpu-build-test')) {
+            Invoke-CiJob 'onnx-cpu-build-test' 'ci-windows-onnx-release' $true
+        }
+    } else {
+        foreach ($name in @('build-test', 'clang-tidy', 'onnx-cpu-build-test')) {
+            if ($Job -in @('all', $name)) {
+                $results.Add([pscustomobject]@{ Job = $name; Status = 'SKIPPED (setup failed)' })
+            }
+        }
     }
-    if ($Job -in @('all', 'clang-tidy')) {
-        Invoke-CiJob 'clang-tidy' 'ci-windows-clang-tidy' $false
+
+    $summary = [System.Collections.Generic.List[string]]::new()
+    $summary.Add('')
+    $summary.Add('================ CI SUMMARY ================')
+    foreach ($result in $results) {
+        $summary.Add(('{0,-22} {1}' -f $result.Job, $result.Status))
     }
-    if ($Job -in @('all', 'onnx-cpu-build-test')) {
-        & "$PSScriptRoot\acquire-onnxruntime.ps1" -Variant cpu
-        $env:SQUATRIS_ONNXRUNTIME_ROOT = (Resolve-Path '.deps\onnxruntime\cpu').Path
-        Invoke-CiJob 'onnx-cpu-build-test' 'ci-windows-onnx-release' $true
+    foreach ($failure in $failures) {
+        $summary.Add('')
+        $summary.Add("--- $($failure.Step) ---")
+        $summary.Add($failure.Message)
+        foreach ($diagnostic in $failure.Diagnostics) {
+            $summary.Add("  $diagnostic")
+        }
+        $summary.Add("Full log: $($failure.Log)")
     }
-    Write-Host ""
-    Write-Host "CI PASS: $Job"
+    $failed = -not $setupPassed -or $failures.Count -gt 0 -or
+        @($results | Where-Object Status -ne 'PASS').Count -gt 0
+    $summary.Add('')
+    $summary.Add($(if ($failed) { 'CI FAIL' } else { 'CI PASS' }))
+    $summaryPath = Join-Path $reportDirectory 'summary.txt'
+    $summary.Add("Summary: $summaryPath")
+    $summary | Set-Content -LiteralPath $summaryPath -Encoding utf8
+    $summary | ForEach-Object { Write-Host $_ }
 } finally {
     Pop-Location
 }
+if ($failed) {
+    exit 1
+}
+exit 0

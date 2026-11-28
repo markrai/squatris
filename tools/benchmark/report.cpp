@@ -498,11 +498,11 @@ Status validate_report(const nlohmann::json& report) {
       }
       return Status::success();
     };
-    const auto warmup_validation = validate_phase(warmup, expected_warmup, "Warm-up");
+    auto warmup_validation = validate_phase(warmup, expected_warmup, "Warm-up");
     if (!warmup_validation.ok()) {
       return warmup_validation;
     }
-    const auto measured_validation = validate_phase(measured, expected_measured, "Measured");
+    auto measured_validation = validate_phase(measured, expected_measured, "Measured");
     if (!measured_validation.ok()) {
       return measured_validation;
     }
@@ -600,7 +600,7 @@ Status validate_report(const nlohmann::json& report) {
             !profile.at("verified").get<bool>()) {
           return invalid("CUDA provider profile contains unverified node assignment");
         }
-        const auto artifact_validation = validate_strict_profile_reference(profile);
+        auto artifact_validation = validate_strict_profile_reference(profile);
         if (!artifact_validation.ok()) {
           return artifact_validation;
         }
@@ -616,7 +616,7 @@ Status validate_report(const nlohmann::json& report) {
           (!profiling_enabled && !recreate_sessions)) {
         return invalid("Audited session retention does not match diagnostic configuration");
       }
-      const auto artifact_validation = validate_audited_profile_evidence(
+      auto artifact_validation = validate_audited_profile_evidence(
           provider_evidence, model.at("detector_sha256").get<std::string>(),
           model.at("pose_sha256").get<std::string>(),
           report.at("build").at("onnxruntime").get<std::string>());
@@ -638,7 +638,7 @@ Status validate_report(const nlohmann::json& report) {
       if (production_profiling.at("provider_evidence").at("verified_sessions_retained").get<bool>()) {
         return invalid("Diagnostic production profile incorrectly claims session retention");
       }
-      const auto production_validation = validate_audited_profile_evidence(
+      auto production_validation = validate_audited_profile_evidence(
           production_profiling.at("provider_evidence"),
           model.at("detector_sha256").get<std::string>(),
           model.at("pose_sha256").get<std::string>(),
