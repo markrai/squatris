@@ -6,6 +6,7 @@ param(
     [string]$PoseModel,
     [string]$ModelManifest,
     [string]$PolicyManifest,
+    [string]$Benchmark,
     [ValidateRange(30, 3600)][int]$DeadlineSeconds = 600
 )
 
@@ -26,7 +27,7 @@ $work = Read-PoseWorkload $Workload
 $output = [IO.Path]::GetFullPath($OutputDirectory)
 if (Test-Path -LiteralPath $output) { throw "Output directory already exists: $output" }
 $preset = if ($Provider -eq 'cpu') { 'windows-onnx-release' } else { 'windows-cuda-release' }
-$benchmark = Join-Path $root "out\build\$preset\tools\benchmark\SquatrisPoseBenchmark.exe"
+$benchmark = if ($Benchmark) { (Resolve-Path -LiteralPath $Benchmark).Path } else { Join-Path $root "out\build\$preset\tools\benchmark\SquatrisPoseBenchmark.exe" }
 if (-not (Test-Path -LiteralPath $benchmark -PathType Leaf)) { throw "Build $preset first" }
 if ($Provider -ne 'cpu') {
     $cudaBin = if ($env:CUDA_PATH) { Join-Path $env:CUDA_PATH 'bin' } else { '' }

@@ -11,6 +11,7 @@
   - 0B.3: MediaPipe Pose evaluation.
   - 0B.4: NVIDIA Maxine feasibility and evaluation, subject to SDK licensing and availability.
   - 0B.5: Production backend selection.
+  - 0B.6: Backend registry, capability negotiation, game-specific profiles and safe model lifecycle.
 - Phase 0C: Recorded-session infrastructure and physical pose qualification.
 - Phase 1A: Player calibration and temporal pose filtering.
 - Phase 1B: Player identity and tracking-loss handling.

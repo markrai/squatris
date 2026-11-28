@@ -2,7 +2,8 @@ param(
     [Parameter(Mandatory)][string]$Workload,
     [Parameter(Mandatory)][string]$ReferenceDirectory,
     [Parameter(Mandatory)][string]$CandidateDirectory,
-    [Parameter(Mandatory)][string]$Output
+    [Parameter(Mandatory)][string]$Output,
+    [string]$Benchmark
 )
 
 $ErrorActionPreference = 'Stop'
@@ -11,7 +12,7 @@ Set-StrictMode -Version Latest
 . "$PSScriptRoot\pose-comparison.ps1"
 
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-$validator = Join-Path $root 'out\build\windows-cuda-release\tools\benchmark\SquatrisPoseBenchmark.exe'
+$validator = if ($Benchmark) { (Resolve-Path -LiteralPath $Benchmark).Path } else { Join-Path $root 'out\build\windows-cuda-release\tools\benchmark\SquatrisPoseBenchmark.exe' }
 if (-not (Test-Path -LiteralPath $validator -PathType Leaf)) { throw 'Build windows-cuda-release first' }
 $validatorHash = Get-PoseComparisonHash $validator
 $work = Read-PoseWorkload $Workload
