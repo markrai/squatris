@@ -884,7 +884,7 @@ squatris::Result<nlohmann::json> verified_model_identity(const Options& options)
   const auto variant = options.backend == "rtmw"
                            ? squatris::backends::rtmpose::PoseModel::rtmw_m_wholebody133
                            : squatris::backends::rtmpose::PoseModel::rtmpose_m_halpe26;
-  const auto model_name = squatris::backends::rtmpose::pose_model_name(variant);
+  const std::string model_name(squatris::backends::rtmpose::pose_model_name(variant));
   for (const auto& artifact : manifest.value()["artifacts"]) {
     if (!artifact.contains("role") || !artifact.contains("onnx_sha256")) {
       continue;
@@ -896,7 +896,7 @@ squatris::Result<nlohmann::json> verified_model_identity(const Options& options)
       expected_detector = artifact["onnx_sha256"].get<std::string>();
     } else if (artifact["role"] == "pose_estimator") {
       if (expected_pose.has_value() || !artifact.contains("id") ||
-          artifact["id"] != model_name) {
+          !artifact["id"].is_string() || artifact["id"].get<std::string>() != model_name) {
         return Status{ErrorCode::invalid_data, "Unexpected or duplicate pose model identity"};
       }
       expected_pose = artifact["onnx_sha256"].get<std::string>();
