@@ -4,17 +4,29 @@ RTMW-m at 256x192 is the initial candidate. OpenMMLab publishes a 133-keypoint C
 
 References: [RTMW release](https://github.com/open-mmlab/mmpose/releases), [RTMlib model zoo](https://github.com/Tau-J/rtmlib), [COCO-WholeBody metadata](https://github.com/open-mmlab/mmpose/blob/main/configs/_base_/datasets/coco_wholebody.py). The candidate uses the shared RGB affine normalization and SimCC decoder provisionally; verify preprocessing and numerical output against the SDK export metadata and upstream reference on the actual artifact before qualification. Model weights and dataset terms require separate review.
 
-## Local artifact pin
+## Pinned artifact
 
-The upstream export is [RTMW-m ONNX SDK](https://download.openmmlab.com/mmpose/v1/projects/rtmw/onnx_sdk/rtmw-dw-m-s_simcc-cocktail14_270e-256x192_20231122.zip). The binary could not be independently retrieved and hashed during implementation, so there is intentionally no fabricated checked-in candidate checksum. Obtain and inspect the official archive locally, retain its hash and SDK metadata, and confirm that its ONNX contract matches the candidate. Supply a separately reviewed expected ONNX SHA-256 explicitly; computing a digest from an untrusted download alone establishes reproducibility, not authenticity. Do not substitute a random re-export. The preparation script never replaces existing files or modifies the reference manifest.
+The official [RTMW-m ONNX SDK](https://download.openmmlab.com/mmpose/v1/projects/rtmw/onnx_sdk/rtmw-dw-l-m_simcc-cocktail14_270e-256x192_20231122.zip) was downloaded and hashed on TITAN. `models/rtmw-m-manifest.json` pins the archive and ONNX bytes separately, together with the unchanged reference detector. These are locally observed checksums, not independently authenticated upstream signatures. Preprocessing and output verification remain pending.
+
+For a fresh installation, reuse the existing downloader without touching the baseline pose weights:
 
 ```powershell
-pwsh -NoProfile -File .\scripts\prepare-rtmw-candidate.ps1 -PoseFile 'C:\path\to\end2end.onnx' -ExpectedOnnxSha256 '<reviewed SHA-256>'
+pwsh -NoProfile -File .\scripts\acquire-models.ps1 -Manifest models\rtmw-m-manifest.json
 ```
+
+If the verified ZIP has already been extracted under `qualification/rtmw-download`, reuse the local ONNX file instead of downloading again:
+
+```powershell
+$files = @(Get-ChildItem qualification\rtmw-download -Recurse -Filter *.onnx -File)
+if ($files.Count -ne 1) { throw 'Expected exactly one ONNX file' }
+pwsh -NoProfile -File .\scripts\prepare-rtmw-candidate.ps1 -PoseFile $files[0].FullName
+```
+
+The preparation script checks the repository pin, copies into a new ignored output directory, and copies the pinned manifest. It does not overwrite the baseline or accept a different caller-supplied checksum.
 
 ## CPU comparison smoke
 
-Build `windows-onnx-release` with the pinned CPU runtime and run both backends on the same smoke workload:
+Build `windows-onnx-release` with the pinned CPU runtime, or reuse a current passing `ci-windows-onnx-release` executable via `-Benchmark`. Run both backends on the same smoke workload. The examples assume the local preparation route above; after fresh acquisition use `models/rtmw-m.onnx` and `models/rtmw-m-manifest.json` instead.
 
 ```powershell
 pwsh -NoProfile -File .\scripts\run-pose-workload.ps1 -Workload config\pose-workload-smoke.json -OutputDirectory qualification\phase0b2\reference-cpu -Provider cpu
