@@ -183,6 +183,7 @@ try {
             Invoke-Checked cmake.exe @('--version')
             Invoke-Checked ninja.exe @('--version')
             & "$PSScriptRoot\tests\ci-diagnostics.tests.ps1"
+            & "$PSScriptRoot\tests\pose-comparison.tests.ps1"
         }
         $setupPassed = $true
     } catch {
