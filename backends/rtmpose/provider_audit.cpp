@@ -210,6 +210,31 @@ nlohmann::json selected_nodes(const nlohmann::json& nodes, const std::set<std::s
 
 }
 
+Result<nlohmann::json> inspect_provider_profile(const ProviderProfile& profile) {
+  try {
+    const auto before = crypto::sha256_file(profile.path);
+    if (!before) {
+      return before.error();
+    }
+    auto result = analyze_profile(profile);
+    if (!result) {
+      return result.error();
+    }
+    const auto& evidence = result.value();
+    if (evidence.at("sha256") != before.value()) {
+      return Status{ErrorCode::invalid_data, "Provider profile changed during inspection"};
+    }
+    if (evidence.at("cuda_nodes").empty() && evidence.at("cpu_nodes").empty() &&
+        evidence.at("unknown_provider_nodes").empty()) {
+      return Status{ErrorCode::invalid_data, "Provider profile contains no observed kernel nodes"};
+    }
+    return result;
+  } catch (const std::exception& exception) {
+    return Status{ErrorCode::invalid_data,
+                  "Could not inspect provider profile: " + std::string(exception.what())};
+  }
+}
+
 Result<nlohmann::json> analyze_provider_profiles(const std::vector<ProviderProfile>& profiles,
                                                  const std::filesystem::path& policy_manifest,
                                                  const std::string& detector_sha256,
