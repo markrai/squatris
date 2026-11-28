@@ -118,9 +118,10 @@ int run(int argc, char** argv) {
     detector.add(result.value().detector_inference);
     pose.add(result.value().pose_inference);
     total.add(result.value().total);
-    samples.push_back({{"detector_ms", result.value().detector_inference.count() / 1000.0},
-                       {"pose_ms", result.value().pose_inference.count() / 1000.0},
-                       {"total_ms", result.value().total.count() / 1000.0}});
+    using Milliseconds = std::chrono::duration<double, std::milli>;
+    samples.push_back({{"detector_ms", Milliseconds(result.value().detector_inference).count()},
+                       {"pose_ms", Milliseconds(result.value().pose_inference).count()},
+                       {"total_ms", Milliseconds(result.value().total).count()}});
   }
   const auto measured_seconds =
       std::chrono::duration<double>(std::chrono::steady_clock::now() - measured_started).count();
@@ -148,7 +149,9 @@ int run(int argc, char** argv) {
       {"runtime", {{"initialization_ms", initialization_ms}, {"provider_evidence", evidence.value()}}},
       {"results",
        {{"elapsed_seconds", measured_seconds},
-        {"throughput_iterations_per_second", options->iterations / measured_seconds},
+        {"throughput_iterations_per_second",
+         measured_seconds > 0.0 ? static_cast<double>(options->iterations) / measured_seconds
+                                : 0.0},
         {"detector_inference", percentiles(detector)},
         {"pose_inference", percentiles(pose)},
         {"combined_model_execution", percentiles(total)},

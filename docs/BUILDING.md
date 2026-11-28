@@ -81,4 +81,6 @@ cmake --build --preset windows-release
 
 The checked-in Clang-Tidy profile treats analyzer, bug-prone, concurrency, performance, and portability findings in project code as errors. Style-only transformations are handled by Clang-Format instead.
 
+The optional `clang-analyzer-optin.core.EnumCastOutOfRange` checker is excluded from the shared profile because MSVC 14.44.35207's standard-library filesystem implementation uses valid combined bitmask enumerations that the checker reports as out of range (see [LLVM issue #179094](https://github.com/llvm/llvm-project/issues/179094)). For example, filesystem flags `0x01 | 0x08` produce `9`. The exception applies to this one checker throughout the project, so it also removes its coverage for project enum casts. Revisit the exception when the supported toolchain handles these system-header flag enums correctly. Other configured checks and warnings-as-errors remain enabled.
+
 CPU ONNX-enabled compilation and hardware-independent tests run in CI without model files. CUDA and camera checks remain opt-in and are driven by `scripts/qualify-titan.ps1` on the target machine.

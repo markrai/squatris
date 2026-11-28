@@ -1,6 +1,7 @@
 Checks: >
   -*,
   clang-analyzer-*,
+  -clang-analyzer-optin.core.EnumCastOutOfRange,
   bugprone-branch-clone,
   bugprone-dangling-handle,
   bugprone-exception-escape,
