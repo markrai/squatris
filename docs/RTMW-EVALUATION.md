@@ -42,8 +42,28 @@ The downloaded RTMW-m export reports a symbolic landmark dimension (`-1`) in ONN
 
 Use the standalone [candidate CUDA profiler](CANDIDATE-CUDA-PROFILING.md) to collect observed execution evidence before writing a reviewed candidate policy. The diagnostic does not authorize production fallback.
 
-RTMW strict CUDA is expected to fail if the common detector requires CPU shape operations. Do not bypass the existing audit. For audited CUDA, generate a separate candidate-specific policy after inspecting the exact ONNX graph and recording node assignments on TITAN with the pinned runtime. Preserve the existing detector inventory; justify every candidate CPU node by exact name, index, operator, shapes and purpose. Reject any substantive CPU neural execution. Validate actual graph control flow and profile coverage. The existing audited provider machinery requires exact model hashes, expected optimized-node inventory and approved shapes; a reference policy cannot authorize the candidate graph. Supply the reviewed file explicitly via `-PolicyManifest` with `-Provider cuda-audited`. No candidate policy is generated automatically in this PR.
+The candidate-specific reviewed policy is `config/rtmw-m-cuda-policy.json`. It copies the existing detector inventory exactly, pins the RTMW model hash, expects 293 CUDA nodes and four exact CPU shape operations (297 observed optimized nodes), and requires the observed convolution and all eight matrix multiplication identities on CUDA. The four CPU nodes are Slice_341 (338), Concat_343 (339), Slice_361 (356), and Concat_362 (357). All observed operands and results are small INT64 vectors. The two reshape-metadata sequences are supported by the observed trace names and tensor shapes; exact original edge connectivity was not independently inspected. Their combined output size was 80 bytes and their combined cold-trace event duration was 128 microseconds, not a sustained timing measurement.
+
+TITAN static inspection with ONNX 1.23.2 reported IR 6, opset 11, 405 original nodes, no top-level If/Loop/Scan, no graph-valued attributes, and no external graph initializers. The uploaded diagnostic trace and report hashes match the run manifest, and the 297 node records match the raw events. SimCC X and Y returned float32 [1,133,384] and [1,133,512]. This is evidence for the reviewed allowlist, not complete static provider coverage. Runtime artifact hashes are recorded as provenance; the existing auditor records actual DLL hashes but does not enforce these provenance hashes. The baseline policy is unchanged. No automatic policy generation or relaxation of the audit was introduced.
+
+Run the paired CPU and audited CUDA smoke with the same CUDA Release executable (it supports explicit CPU execution). Build it first if needed. Use new directories:
+
+```powershell
+$benchmark = 'out\build\windows-cuda-release\tools\benchmark\SquatrisPoseBenchmark.exe'
+$common = @{
+    Workload = 'config\pose-workload-smoke.json'
+    Backend = 'rtmw'
+    PoseModel = 'qualification\rtmw-m-artifact\rtmw-m.onnx'
+    ModelManifest = 'qualification\rtmw-m-artifact\manifest.json'
+    Benchmark = $benchmark
+}
+pwsh -NoProfile -File .\scripts\run-pose-workload.ps1 -Workload $common.Workload -Backend $common.Backend -PoseModel $common.PoseModel -ModelManifest $common.ModelManifest -Benchmark $benchmark -Provider cpu -OutputDirectory qualification\phase0b2\rtmw-parity-cpu
+pwsh -NoProfile -File .\scripts\run-pose-workload.ps1 -Workload $common.Workload -Backend $common.Backend -PoseModel $common.PoseModel -ModelManifest $common.ModelManifest -Benchmark $benchmark -Provider cuda-audited -PolicyManifest config\rtmw-m-cuda-policy.json -OutputDirectory qualification\phase0b2\rtmw-parity-cuda
+& $benchmark --compare-cpu-report qualification\phase0b2\rtmw-parity-cpu\mmpose-demo.json --compare-cuda-report qualification\phase0b2\rtmw-parity-cuda\mmpose-demo.json --parity-output qualification\phase0b2\rtmw-parity.json
+```
+
+If the candidate fails the audit or parity, preserve the evidence and stop; do not widen the allowlist or tolerance merely to obtain a pass. The existing parity thresholds are unchanged. Successful preflight and parity are prerequisites to a separate GPU performance comparison; neither establishes physical accuracy or production readiness.
 
 ## Acceptance remaining
 
-Validate tensor metadata and actual shape/element counts on TITAN, compare decoded coordinates and scores against the upstream SDK, capture CPU/CUDA numerical parity, and compare representative non-looped recordings with matching workload hashes. Run idle and contended paced workloads with resource evidence once the candidate policy is approved. Complete annotated localization, coverage, occlusion/re-entry and representative full-body camera checks before selecting a winner. The candidate is benchmark-only in this slice; no default live Pose Lab model change. Windows CI and hardware execution are pending.
+Validate tensor metadata and actual shape/element counts on TITAN, compare decoded coordinates and scores against the upstream SDK, capture CPU/CUDA numerical parity, and compare representative non-looped recordings with matching workload hashes. Run idle and contended paced workloads with resource evidence once the candidate policy is approved. Complete annotated localization, coverage, occlusion/re-entry and representative full-body camera checks before selecting a winner. The candidate is benchmark-only in this slice; no default live Pose Lab model change. CPU smoke and CI passed on TITAN; the new policy still requires actual audited CUDA preflight and parity.

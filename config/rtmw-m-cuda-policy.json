@@ -1,0 +1,373 @@
+{
+  "schema_version": 1,
+  "policy_id": "squatris-rtmw-m-ort-1.20.1-cuda-audited-v1",
+  "runtime_version": "1.20.1",
+  "graph_optimization_level": "ORT_ENABLE_ALL",
+  "execution_mode": "ORT_SEQUENTIAL",
+  "sessions": {
+    "detector": {
+      "model_sha256": "ceb11c07298f95c50d7c5abeb906d03340c85f23aa79e3e66966e7fb6c307250",
+      "expected_optimized_node_count": 262,
+      "expected_cuda_node_count": 258,
+      "static_graph": {
+        "ir_version": 6,
+        "onnx_opset": 11,
+        "original_node_count": 336,
+        "control_flow_nodes": []
+      },
+      "required_cuda_nodes": [
+        {
+          "name": "Conv_31",
+          "operator": "Conv",
+          "node_index": "3"
+        },
+        {
+          "name": "Conv_287",
+          "operator": "Conv",
+          "node_index": "258"
+        },
+        {
+          "name": "NonMaxSuppression_490",
+          "operator": "NonMaxSuppression",
+          "node_index": "311"
+        }
+      ],
+      "approved_cpu_nodes": [
+        {
+          "name": "Gather_523",
+          "operator": "Gather",
+          "node_index": "328",
+          "domain": "ai.onnx",
+          "classification": "shape-indexing",
+          "input_type_shape": [
+            {
+              "int64": [
+                2
+              ]
+            },
+            {
+              "int64": []
+            }
+          ],
+          "output_type_shape": [
+            {
+              "int64": []
+            }
+          ],
+          "approximate_input_bytes": 24,
+          "approximate_output_bytes": 8,
+          "justification": "Reads a scalar extent from the two-element Shape_522 result used to bound TopK output selection.",
+          "memory_transfer": "Shape_522 produces CPU shape metadata; no explicit copy event was observed."
+        },
+        {
+          "name": "Less_526",
+          "operator": "Less",
+          "node_index": "329",
+          "domain": "ai.onnx",
+          "classification": "shape-bound-calculation",
+          "input_type_shape": [
+            {
+              "int64": []
+            },
+            {
+              "int64": []
+            }
+          ],
+          "output_type_shape": [
+            {
+              "bool": []
+            }
+          ],
+          "approximate_input_bytes": 16,
+          "approximate_output_bytes": 1,
+          "justification": "Compares the requested TopK bound with the scalar candidate count.",
+          "memory_transfer": "Consumes CPU scalar metadata and a one-element initializer; no explicit copy event was observed."
+        },
+        {
+          "name": "Where_527",
+          "operator": "Where",
+          "node_index": "330",
+          "domain": "ai.onnx",
+          "classification": "shape-bound-calculation",
+          "input_type_shape": [
+            {
+              "bool": []
+            },
+            {
+              "int64": []
+            },
+            {
+              "int64": []
+            }
+          ],
+          "output_type_shape": [
+            {
+              "int64": []
+            }
+          ],
+          "approximate_input_bytes": 17,
+          "approximate_output_bytes": 8,
+          "justification": "Selects the scalar TopK count after the bound comparison.",
+          "memory_transfer": "All inputs and output are CPU scalar metadata; no explicit copy event was observed."
+        },
+        {
+          "name": "Reshape_528",
+          "operator": "Reshape",
+          "node_index": "331",
+          "domain": "ai.onnx",
+          "classification": "shape-metadata-manipulation",
+          "input_type_shape": [
+            {
+              "int64": []
+            },
+            {
+              "int64": [
+                1
+              ]
+            }
+          ],
+          "output_type_shape": [
+            {
+              "int64": [
+                1
+              ]
+            }
+          ],
+          "approximate_input_bytes": 16,
+          "approximate_output_bytes": 8,
+          "justification": "Converts the scalar TopK count to the one-element tensor required by TopK.",
+          "memory_transfer": "Produces a CPU one-element shape tensor consumed as a CPU input by the CUDA TopK kernel."
+        }
+      ]
+    },
+    "pose": {
+      "model_sha256": "68db326c5c6f3273456f803eae0faf5440478369f2c3ee67258d2f36512e8d76",
+      "expected_optimized_node_count": 297,
+      "expected_cuda_node_count": 293,
+      "static_graph": {
+        "ir_version": 6,
+        "onnx_opset": 11,
+        "original_node_count": 405,
+        "control_flow_nodes": [],
+        "subgraph_nodes": [],
+        "external_initializers": [],
+        "inspection_scope": "TITAN original ONNX graph inspection, ONNX 1.23.2; reported top-level graph inventory"
+      },
+      "required_cuda_nodes": [
+        {
+          "name": "Conv_0",
+          "operator": "Conv",
+          "node_index": "0"
+        },
+        {
+          "name": "Conv_205",
+          "operator": "Conv",
+          "node_index": "205"
+        },
+        {
+          "name": "MatMul_353",
+          "operator": "MatMul",
+          "node_index": "348"
+        },
+        {
+          "name": "MatMul_372",
+          "operator": "MatMul",
+          "node_index": "366"
+        },
+        {
+          "name": "MatMul_382",
+          "operator": "MatMul",
+          "node_index": "375"
+        },
+        {
+          "name": "MatMul_393/MatmulTransposeFusion//MatMulScaleFusion/",
+          "operator": "FusedMatMul",
+          "node_index": "496"
+        },
+        {
+          "name": "MatMul_398",
+          "operator": "MatMul",
+          "node_index": "390"
+        },
+        {
+          "name": "MatMul_400",
+          "operator": "MatMul",
+          "node_index": "392"
+        },
+        {
+          "name": "MatMul_403",
+          "operator": "MatMul",
+          "node_index": "395"
+        },
+        {
+          "name": "MatMul_404",
+          "operator": "MatMul",
+          "node_index": "396"
+        }
+      ],
+      "approved_cpu_nodes": [
+        {
+          "name": "Slice_341",
+          "operator": "Slice",
+          "node_index": "338",
+          "domain": "ai.onnx",
+          "classification": "shape-metadata-manipulation",
+          "input_type_shape": [
+            {
+              "int64": [
+                4
+              ]
+            },
+            {
+              "int64": [
+                1
+              ]
+            },
+            {
+              "int64": [
+                1
+              ]
+            },
+            {
+              "int64": [
+                1
+              ]
+            }
+          ],
+          "output_type_shape": [
+            {
+              "int64": [
+                2
+              ]
+            }
+          ],
+          "approximate_input_bytes": 56,
+          "approximate_output_bytes": 16,
+          "justification": "Observed four-element INT64 shape vector reduced to two elements, consistent with the Shape_338 to Reshape_344 reshape-metadata sequence.",
+          "memory_transfer": "No explicit copy event was recorded; the profile does not establish the absence of transfers."
+        },
+        {
+          "name": "Concat_343",
+          "operator": "Concat",
+          "node_index": "339",
+          "domain": "ai.onnx",
+          "classification": "shape-metadata-manipulation",
+          "input_type_shape": [
+            {
+              "int64": [
+                2
+              ]
+            },
+            {
+              "int64": [
+                1
+              ]
+            }
+          ],
+          "output_type_shape": [
+            {
+              "int64": [
+                3
+              ]
+            }
+          ],
+          "approximate_input_bytes": 24,
+          "approximate_output_bytes": 24,
+          "justification": "Observed two-element and one-element INT64 inputs combined into the three-element shape vector, consistent with the Slice_341 to Reshape_344 reshape-metadata sequence.",
+          "memory_transfer": "No explicit copy event was recorded; the profile does not establish the absence of transfers."
+        },
+        {
+          "name": "Slice_361",
+          "operator": "Slice",
+          "node_index": "356",
+          "domain": "ai.onnx",
+          "classification": "shape-metadata-manipulation",
+          "input_type_shape": [
+            {
+              "int64": [
+                4
+              ]
+            },
+            {
+              "int64": [
+                1
+              ]
+            },
+            {
+              "int64": [
+                1
+              ]
+            },
+            {
+              "int64": [
+                1
+              ]
+            }
+          ],
+          "output_type_shape": [
+            {
+              "int64": [
+                2
+              ]
+            }
+          ],
+          "approximate_input_bytes": 56,
+          "approximate_output_bytes": 16,
+          "justification": "Observed four-element INT64 shape vector reduced to two elements, consistent with the Shape_360 to Reshape_363 reshape-metadata sequence.",
+          "memory_transfer": "No explicit copy event was recorded; the profile does not establish the absence of transfers."
+        },
+        {
+          "name": "Concat_362",
+          "operator": "Concat",
+          "node_index": "357",
+          "domain": "ai.onnx",
+          "classification": "shape-metadata-manipulation",
+          "input_type_shape": [
+            {
+              "int64": [
+                2
+              ]
+            },
+            {
+              "int64": [
+                1
+              ]
+            }
+          ],
+          "output_type_shape": [
+            {
+              "int64": [
+                3
+              ]
+            }
+          ],
+          "approximate_input_bytes": 24,
+          "approximate_output_bytes": 24,
+          "justification": "Observed two-element and one-element INT64 inputs combined into the three-element shape vector, consistent with the Slice_361 to Reshape_363 reshape-metadata sequence.",
+          "memory_transfer": "No explicit copy event was recorded; the profile does not establish the absence of transfers."
+        }
+      ]
+    }
+  },
+  "diagnostic_provenance": {
+    "scope": "TITAN one zero-filled input; review of uploaded profile and diagnostic report, not complete static assignment",
+    "report_sha256": "761f73385a68434f47b4439d1bf9815295a9dc9a324d3f09a212c5cf9985e494",
+    "profile_sha256": "acd3c2cd959e66f4d31e8cb37032f358d54227e2d4b6f30a4ff81b5868332f8b",
+    "manifest_sha256": "c20240e21909dec77446938367247200ceb534f4096a1226acc070c88f13c84c",
+    "observed_runtime_artifacts": [
+      {
+        "name": "onnxruntime.dll",
+        "sha256": "1fabf449edd2957326e0db1d123939c63a9a9e5588050fea9548501578c5e1b4"
+      },
+      {
+        "name": "onnxruntime_providers_shared.dll",
+        "sha256": "167ff56b0c8f9bf2758cc351e6b17b52a7bcd582fbf8ba4b3cf982921e9c0a91"
+      },
+      {
+        "name": "onnxruntime_providers_cuda.dll",
+        "sha256": "42ceff79ef21c50dba832e48e2bd97ad952ce0ec721c786fd13bfb8873a144b7"
+      }
+    ],
+    "runtime_artifact_hashes_enforced_by_policy": false
+  }
+}
