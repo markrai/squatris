@@ -40,6 +40,8 @@ The downloaded RTMW-m export reports a symbolic landmark dimension (`-1`) in ONN
 
 ## GPU gate
 
+Use the standalone [candidate CUDA profiler](CANDIDATE-CUDA-PROFILING.md) to collect observed execution evidence before writing a reviewed candidate policy. The diagnostic does not authorize production fallback.
+
 RTMW strict CUDA is expected to fail if the common detector requires CPU shape operations. Do not bypass the existing audit. For audited CUDA, generate a separate candidate-specific policy after inspecting the exact ONNX graph and recording node assignments on TITAN with the pinned runtime. Preserve the existing detector inventory; justify every candidate CPU node by exact name, index, operator, shapes and purpose. Reject any substantive CPU neural execution. Validate actual graph control flow and profile coverage. The existing audited provider machinery requires exact model hashes, expected optimized-node inventory and approved shapes; a reference policy cannot authorize the candidate graph. Supply the reviewed file explicitly via `-PolicyManifest` with `-Provider cuda-audited`. No candidate policy is generated automatically in this PR.
 
 ## Acceptance remaining

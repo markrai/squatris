@@ -90,6 +90,39 @@ protected:
   const std::string model_hash_ = std::string(64, 'a');
 };
 
+TEST_F(ProviderAuditTest, InspectsObservedNodesWithoutPolicyApproval) {
+  const auto result = squatris::backends::rtmpose::inspect_provider_profile(
+      {"candidate", directory_ / "detector.json"});
+  ASSERT_TRUE(result);
+  EXPECT_EQ(result.value().at("cuda_nodes").size(), 1U);
+  EXPECT_EQ(result.value().at("cpu_nodes").size(), 1U);
+  EXPECT_FALSE(result.value().contains("verified"));
+  EXPECT_FALSE(result.value().contains("approved_cpu_nodes"));
+}
+
+TEST_F(ProviderAuditTest, InspectsUnknownProvidersWithoutApprovingThem) {
+  valid_trace_[0]["args"]["provider"] = "UnknownExecutionProvider";
+  write("detector.json", valid_trace_);
+  const auto result = squatris::backends::rtmpose::inspect_provider_profile(
+      {"candidate", directory_ / "detector.json"});
+  ASSERT_TRUE(result);
+  EXPECT_EQ(result.value().at("unknown_provider_nodes").size(), 1U);
+  EXPECT_TRUE(result.value().at("cuda_nodes").empty());
+}
+
+TEST_F(ProviderAuditTest, RejectsEmptyDiagnosticProfile) {
+  write("detector.json", json::array());
+  EXPECT_FALSE(squatris::backends::rtmpose::inspect_provider_profile(
+      {"candidate", directory_ / "detector.json"}));
+}
+
+TEST_F(ProviderAuditTest, RejectsMalformedDiagnosticProfile) {
+  valid_trace_[0]["args"].erase("provider");
+  write("detector.json", valid_trace_);
+  EXPECT_FALSE(squatris::backends::rtmpose::inspect_provider_profile(
+      {"candidate", directory_ / "detector.json"}));
+}
+
 TEST_F(ProviderAuditTest, AcceptsExactObservedAssignment) {
   const auto result = audit();
   ASSERT_TRUE(result);

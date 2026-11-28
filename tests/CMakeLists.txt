@@ -51,6 +51,13 @@ set_tests_properties(squatris-benchmark-rejects-nonfinite-source-rate PROPERTIES
   LABELS "integration;hardware-independent"
   WILL_FAIL TRUE
 )
+add_test(NAME squatris-candidate-profiler-rejects-incomplete-request
+  COMMAND squatris-candidate-profiler --model unused.onnx
+)
+set_tests_properties(squatris-candidate-profiler-rejects-incomplete-request PROPERTIES
+  LABELS "integration;hardware-independent"
+  WILL_FAIL TRUE
+)
 add_test(NAME squatris-benchmark-rejects-unconfigured-rtmw
   COMMAND squatris-pose-benchmark --backend rtmw --provider cpu
 )

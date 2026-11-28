@@ -16,6 +16,9 @@ struct ProviderProfile {
 };
 
 [[nodiscard]] Result<nlohmann::json>
+inspect_provider_profile(const ProviderProfile& profile);
+
+[[nodiscard]] Result<nlohmann::json>
 analyze_provider_profiles(const std::vector<ProviderProfile>& profiles,
                           const std::filesystem::path& policy_manifest,
                           const std::string& detector_sha256, const std::string& pose_sha256,

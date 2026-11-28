@@ -67,6 +67,7 @@ endif()
 if(SQUATRIS_BUILD_BENCHMARKS)
   add_subdirectory(tools/benchmark)
   add_subdirectory(tools/model-benchmark)
+  add_subdirectory(tools/candidate-profiler)
 endif()
 
 include(CTest)

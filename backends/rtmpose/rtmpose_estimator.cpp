@@ -18,6 +18,7 @@
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 
+#include "squatris/backends/rtmpose/candidate_cuda_profile.hpp"
 #include "squatris/backends/rtmpose/model_math.hpp"
 #include "squatris/core/crypto/sha256.hpp"
 #include "squatris/core/pose/mapping.hpp"
@@ -467,6 +468,114 @@ RtmposeEstimator::RtmposeEstimator(std::unique_ptr<Impl> implementation)
 RtmposeEstimator::~RtmposeEstimator() = default;
 RtmposeEstimator::RtmposeEstimator(RtmposeEstimator&&) noexcept = default;
 RtmposeEstimator& RtmposeEstimator::operator=(RtmposeEstimator&&) noexcept = default;
+
+Result<nlohmann::json> profile_candidate_cuda(const CandidateCudaProfileRequest& request) {
+#if SQUATRIS_HAS_ONNXRUNTIME
+  try {
+    if (request.width <= 0 || request.width > 2048 || request.height <= 0 ||
+        request.height > 2048 || request.output_directory.empty()) {
+      return Status{ErrorCode::invalid_argument, "Invalid candidate profile dimensions or directory"};
+    }
+    const auto model = std::filesystem::absolute(request.model);
+    const auto before = crypto::sha256_file(model);
+    if (!before) {
+      return before.error();
+    }
+    if (before.value() != request.expected_sha256) {
+      return Status{ErrorCode::invalid_data, "Candidate model checksum mismatch"};
+    }
+    if (!provider_available("CUDAExecutionProvider")) {
+      return Status{ErrorCode::unavailable, "CUDAExecutionProvider is unavailable"};
+    }
+    const auto output = std::filesystem::absolute(request.output_directory);
+    if (!std::filesystem::create_directories(output)) {
+      return Status{ErrorCode::invalid_argument, "Candidate profile directory already exists"};
+    }
+    auto environment = make_environment(false);
+    auto options = session_options(ExecutionProvider::cuda_audited, 0, output / "candidate");
+    auto session = make_session(environment, model, std::move(options), "diagnostic candidate");
+    Ort::AllocatorWithDefaultOptions allocator;
+    const auto inputs = input_names(session, allocator);
+    const auto outputs = output_names(session, allocator);
+    require_contract(inputs.values.size() == 1 && !outputs.values.empty(),
+                     "candidate requires one input and at least one output");
+    const std::array<std::int64_t, 4> shape{1, 3, request.height, request.width};
+    validate_tensor_metadata(session, true, 0, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, shape,
+                             "candidate input", true);
+    const auto declared_input = session.GetInputTypeInfo(0).GetTensorTypeAndShapeInfo().GetShape();
+    const auto elements = static_cast<std::size_t>(3 * request.height * request.width);
+    std::vector<float> data(elements, 0.0F);
+    auto memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+    auto tensor = Ort::Value::CreateTensor<float>(memory, data.data(), data.size(), shape.data(),
+                                                  shape.size());
+    const auto values = session.Run(Ort::RunOptions{nullptr}, inputs.values.data(), &tensor, 1,
+                                    outputs.values.data(), outputs.values.size());
+    require_contract(values.size() == outputs.values.size(), "candidate output count differs");
+    nlohmann::json output_tensors = nlohmann::json::array();
+    for (std::size_t index = 0; index < values.size(); ++index) {
+      require_contract(values[index].IsTensor(), "candidate output is not a tensor");
+      const auto declared = session.GetOutputTypeInfo(index).GetTensorTypeAndShapeInfo();
+      const auto actual = values[index].GetTensorTypeAndShapeInfo();
+      output_tensors.push_back({{"name", outputs.values[index]},
+                                {"declared_shape", declared.GetShape()},
+                                {"actual_shape", actual.GetShape()},
+                                {"element_type", static_cast<int>(actual.GetElementType())},
+                                {"element_count", actual.GetElementCount()}});
+    }
+    const auto trace_path = session.EndProfilingAllocated(allocator);
+    const auto observed = inspect_provider_profile(
+        {"candidate", std::filesystem::path(trace_path.get())});
+    if (!observed) {
+      return observed.error();
+    }
+    const auto after = crypto::sha256_file(model);
+    if (!after || after.value() != before.value()) {
+      return Status{ErrorCode::invalid_data, "Candidate model changed during profiling"};
+    }
+    const auto artifacts = loaded_runtime_artifacts();
+    if (!artifacts) {
+      return artifacts.error();
+    }
+    const auto version = std::string(Ort::GetVersionString());
+    if (version != SQUATRIS_ONNXRUNTIME_VERSION) {
+      return Status{ErrorCode::invalid_data, "Loaded ONNX Runtime version differs from headers"};
+    }
+    const auto& evidence = observed.value();
+    const auto cuda_count = evidence.at("cuda_nodes").size();
+    const auto cpu_count = evidence.at("cpu_nodes").size();
+    const auto unknown_count = evidence.at("unknown_provider_nodes").size();
+    return nlohmann::json{
+        {"schema_version", 1},
+        {"kind", "candidate-cuda-diagnostic"},
+        {"production_authorized", false},
+        {"verified", false},
+        {"static_assignment_complete", false},
+        {"scope", "one zero-filled synthetic input; observed execution only"},
+        {"model", {{"path", model.string()}, {"sha256", before.value()}}},
+        {"runtime_version", version},
+        {"runtime_header_version", SQUATRIS_ONNXRUNTIME_VERSION},
+        {"runtime_artifacts", artifacts.value()},
+        {"graph_optimization_level", "ORT_ENABLE_ALL"},
+        {"execution_mode", "ORT_SEQUENTIAL"},
+        {"cuda_device_id", 0},
+        {"cuda_graph_execution", false},
+        {"cpu_fallback_permitted_for_diagnostic", true},
+        {"input", {{"name", inputs.values[0]}, {"declared_shape", declared_input},
+                   {"actual_shape", shape}, {"element_type", 1}}},
+        {"outputs", output_tensors},
+        {"observed_node_counts", {{"cuda", cuda_count}, {"cpu", cpu_count},
+                                  {"unknown", unknown_count}}},
+        {"requires_review", true},
+        {"cuda_observed", cuda_count > 0},
+        {"evidence", evidence}};
+  } catch (const std::exception& exception) {
+    return Status{ErrorCode::initialization_failed, exception.what()};
+  }
+#else
+  static_cast<void>(request);
+  return Status{ErrorCode::unavailable, "Candidate profiling requires ONNX Runtime"};
+#endif
+}
 
 Result<std::unique_ptr<RtmposeEstimator>> RtmposeEstimator::create(const RtmposeConfig& config) {
 #if SQUATRIS_HAS_ONNXRUNTIME
