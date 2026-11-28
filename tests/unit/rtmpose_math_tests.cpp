@@ -7,6 +7,29 @@
 
 namespace {
 
+using squatris::backends::rtmpose::tensor_metadata_dimension_matches;
+
+TEST(RtmposeTensorMetadata, AcceptsDynamicRtmwOutputDimensions) {
+  for (const auto expected : {133, 384, 512}) {
+    EXPECT_TRUE(tensor_metadata_dimension_matches(-1, expected, true));
+    EXPECT_TRUE(tensor_metadata_dimension_matches(expected, expected, true));
+  }
+}
+
+TEST(RtmposeTensorMetadata, RejectsIncompatibleStaticDimensions) {
+  EXPECT_FALSE(tensor_metadata_dimension_matches(26, 133, true));
+  EXPECT_FALSE(tensor_metadata_dimension_matches(512, 384, true));
+  EXPECT_FALSE(tensor_metadata_dimension_matches(0, 133, true));
+  EXPECT_FALSE(tensor_metadata_dimension_matches(-2, 133, true));
+}
+
+TEST(RtmposeTensorMetadata, PreservesStrictDimensionsAndLegacyWildcard) {
+  EXPECT_FALSE(tensor_metadata_dimension_matches(-1, 133, false));
+  EXPECT_TRUE(tensor_metadata_dimension_matches(133, 133, false));
+  EXPECT_TRUE(tensor_metadata_dimension_matches(-1, 0, false));
+  EXPECT_TRUE(tensor_metadata_dimension_matches(1, 0, false));
+}
+
 TEST(RtmposePreprocessing, MatchesUpstreamCenterScaleAndAspectRule) {
   const auto region =
       squatris::backends::rtmpose::prepare_pose_region({0.0F, 0.0F, 100.0F, 200.0F});

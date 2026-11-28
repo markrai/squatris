@@ -36,6 +36,8 @@ pwsh -NoProfile -File .\scripts\compare-pose-workloads.ps1 -Workload config\pose
 
 The comparator currently requires the CUDA Release validator executable even for CPU reports; build it from the same revision. CPU is an intentional diagnostic, not silent fallback or a GPU-performance result. The same five-frame smoke is not tracking-accuracy evidence.
 
+The downloaded RTMW-m export reports a symbolic landmark dimension (`-1`) in ONNX Runtime output metadata. For this candidate's SimCC outputs only, initialization accepts a symbolic dimension or the expected static value, while rejecting incompatible static dimensions. Each real inference still requires exact float32 tensor shapes `[1,133,384]` and `[1,133,512]` and corresponding element counts before any tensor data is read. The detector and input contracts are unchanged.
+
 ## GPU gate
 
 RTMW strict CUDA is expected to fail if the common detector requires CPU shape operations. Do not bypass the existing audit. For audited CUDA, generate a separate candidate-specific policy after inspecting the exact ONNX graph and recording node assignments on TITAN with the pinned runtime. Preserve the existing detector inventory; justify every candidate CPU node by exact name, index, operator, shapes and purpose. Reject any substantive CPU neural execution. Validate actual graph control flow and profile coverage. The existing audited provider machinery requires exact model hashes, expected optimized-node inventory and approved shapes; a reference policy cannot authorize the candidate graph. Supply the reviewed file explicitly via `-PolicyManifest` with `-Provider cuda-audited`. No candidate policy is generated automatically in this PR.
