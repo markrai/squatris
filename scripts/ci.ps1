@@ -1,6 +1,7 @@
 param(
     [ValidateSet('all', 'build-test', 'clang-tidy', 'onnx-cpu-build-test')]
-    [string]$Job = 'all'
+    [string]$Job = 'all',
+    [string]$VcpkgRoot
 )
 
 $ErrorActionPreference = 'Stop'
@@ -57,23 +58,25 @@ function Initialize-Compiler {
 }
 
 function Initialize-Vcpkg {
+    param([string]$SelectedRoot)
     $configuration = Get-Content -LiteralPath 'vcpkg-configuration.json' -Raw | ConvertFrom-Json
     $baseline = $configuration.'default-registry'.baseline
-    if (-not $env:VCPKG_ROOT) {
-        $env:VCPKG_ROOT = Join-Path $PWD.Path '.deps\vcpkg'
-    }
-    $env:VCPKG_ROOT = [IO.Path]::GetFullPath($env:VCPKG_ROOT)
-    $executable = Join-Path $env:VCPKG_ROOT 'vcpkg.exe'
+    $localRoot = [IO.Path]::GetFullPath((Join-Path $PWD.Path '.deps\vcpkg'))
+    $env:VCPKG_ROOT = $SelectedRoot
+    Write-Host "vcpkg root: $SelectedRoot"
+    $executable = Join-Path $SelectedRoot 'vcpkg.exe'
     if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
-        $localRoot = Join-Path $PWD.Path '.deps\vcpkg'
-        if ($env:VCPKG_ROOT -ne $localRoot) {
-            throw "Supplied VCPKG_ROOT does not contain vcpkg.exe: $env:VCPKG_ROOT"
+        if ($SelectedRoot -ne $localRoot) {
+            throw "Explicit vcpkg root does not contain vcpkg.exe: $SelectedRoot"
         }
         & "$PSScriptRoot\bootstrap-vcpkg.ps1" -Destination $localRoot
     }
-    $head = & git.exe -C $env:VCPKG_ROOT rev-parse HEAD
+    if (-not (Test-Path -LiteralPath (Join-Path $SelectedRoot '.git'))) {
+        throw "vcpkg root is not a Git checkout: $SelectedRoot"
+    }
+    $head = & git.exe -C $SelectedRoot rev-parse HEAD
     if ($LASTEXITCODE -ne 0 -or $head -ne $baseline) {
-        throw "VCPKG_ROOT must be at the pinned baseline $baseline"
+        throw "vcpkg checkout at $SelectedRoot must be at the pinned baseline $baseline (found: $head)"
     }
     Write-Host "vcpkg baseline: $head"
 }
@@ -99,12 +102,17 @@ if (-not $IsWindows) {
 
 Push-Location (Join-Path $PSScriptRoot '..')
 try {
+    $selectedRoot = if ([string]::IsNullOrWhiteSpace($VcpkgRoot)) {
+        [IO.Path]::GetFullPath((Join-Path $PWD.Path '.deps\vcpkg'))
+    } else {
+        [IO.Path]::GetFullPath($VcpkgRoot, $PWD.Path)
+    }
     Initialize-Compiler
     if ($Job -in @('all', 'clang-tidy') -and
         -not (Get-Command clang-tidy.exe -ErrorAction SilentlyContinue)) {
         throw 'Clang-Tidy is required for the analysis job'
     }
-    Initialize-Vcpkg
+    Initialize-Vcpkg -SelectedRoot $selectedRoot
     Invoke-Checked cmake.exe @('--version')
     Invoke-Checked ninja.exe @('--version')
     if ($Job -in @('all', 'clang-tidy')) {
