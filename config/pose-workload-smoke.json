@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "clips": [
+    {
+      "id": "mmpose-demo",
+      "scenario": "smoke",
+      "path": "../qualification/inputs/mmpose-demo.mp4",
+      "sha256": "dc788b413f384887dab9502197657c05393efd1d26825831e4da6fa75b4908c9",
+      "warmup_frames": 1,
+      "measured_frames": 4
+    }
+  ]
+}

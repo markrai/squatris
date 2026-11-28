@@ -6,6 +6,11 @@
 - Phase 0A.3: Audited CUDA execution, provider enforcement, and qualification recovery.
 - Phase 0A.4: Live Pose Lab restoration, sustained-latency investigation, regression hardening, and final TITAN physical acceptance.
 - Phase 0B: Comparative pose-model evaluation.
+  - 0B.1: Immutable workload manifests, deterministic runs and comparable evidence.
+  - 0B.2: RTMW evaluation.
+  - 0B.3: MediaPipe Pose evaluation.
+  - 0B.4: NVIDIA Maxine feasibility and evaluation, subject to SDK licensing and availability.
+  - 0B.5: Production backend selection.
 - Phase 0C: Recorded-session infrastructure and physical pose qualification.
 - Phase 1A: Player calibration and temporal pose filtering.
 - Phase 1B: Player identity and tracking-loss handling.
@@ -23,4 +28,4 @@
 
 Future gestures will use temporal state machines, player calibration, hysteresis, confidence gating, and explicit rearming. Tracking loss will fail closed. Qualification will report intentional recall and unintended activations separately.
 
-Phase 0B must not start until Phase 0A.4 final automated CUDA qualification and the remaining representative-footage and human Pose Lab observations are complete on TITAN. Hardware-independent success, a looped performance run, or a partial TITAN report does not satisfy the gate.
+Phase 0B.1 proceeds following the user's qualitative live Pose Lab smoke test and the near-60-FPS idle simulated performance run. This is an explicit scope decision, not completion of Phase 0A.4 physical qualification. Quantitative physical accuracy, actual camera delivery, complete provider/resource evidence review, and production memory isolation remain open. Representative recordings, annotated evaluation and physical qualification must be completed before backend selection can be called qualified. See [POSE-COMPARISON.md](POSE-COMPARISON.md).

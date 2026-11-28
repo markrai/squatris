@@ -85,3 +85,7 @@ Validation independently reads and hashes referenced ONNX Runtime profiles, reco
 The CPU/CUDA parity command requires successful deterministic reports with the same source and model hashes. It compares person availability, bounding-box IoU, canonical landmark availability and coordinates, detection/pose/landmark confidences, anatomical left/right identities, projected knee angles, and full-body coverage. The current tolerances are IoU at least `0.995`, normalized coordinate difference at most `0.002`, confidence difference at most `0.005`, and projected knee-angle difference at most `2.0` degrees. Agreement is numerical parity, not proof of physical accuracy.
 
 The 60-update/s and 80 ms response targets remain engineering targets. A short or looped clip is performance evidence only and cannot replace representative physical qualification.
+
+## Comparative workloads
+
+For deterministic, hash-bound multi-clip comparisons, see [POSE-COMPARISON.md](POSE-COMPARISON.md). The workload runner and comparator reuse the native report validator without weakening its provider policies. Model selection requires representative recordings and independent accuracy evidence.
