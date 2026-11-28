@@ -25,6 +25,11 @@ struct PoseRegion {
   float height{};
 };
 
+[[nodiscard]] constexpr bool tensor_metadata_dimension_matches(
+    std::int64_t actual, std::int64_t expected, bool allow_dynamic) noexcept {
+  return expected == 0 || actual == expected || (allow_dynamic && actual == -1);
+}
+
 [[nodiscard]] std::array<float, 3>
 normalize_pose_pixel(std::array<std::uint8_t, 3> bgr_pixel) noexcept;
 

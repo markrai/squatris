@@ -66,7 +66,8 @@ void require_contract(bool condition, const std::string& message) {
 void validate_tensor_metadata(const Ort::Session& session, bool input, std::size_t index,
                               ONNXTensorElementDataType expected_type,
                               std::span<const std::int64_t> expected_shape,
-                              std::string_view tensor_name) {
+                              std::string_view tensor_name,
+                              bool allow_dynamic_dimensions = false) {
   const auto type_info = input ? session.GetInputTypeInfo(index) : session.GetOutputTypeInfo(index);
   require_contract(type_info.GetONNXType() == ONNX_TYPE_TENSOR,
                    std::string(tensor_name) + " is not a tensor");
@@ -78,10 +79,12 @@ void validate_tensor_metadata(const Ort::Session& session, bool input, std::size
                    std::string(tensor_name) + " rank is incorrect");
   for (std::size_t dimension = 0; dimension < shape.size(); ++dimension) {
     if (expected_shape[dimension] != 0) {
-      require_contract(shape[dimension] == expected_shape[dimension],
-                       std::string(tensor_name) + " dimension " + std::to_string(dimension) +
-                           " is " + std::to_string(shape[dimension]) + ", expected " +
-                           std::to_string(expected_shape[dimension]));
+      require_contract(
+          tensor_metadata_dimension_matches(shape[dimension], expected_shape[dimension],
+                                            allow_dynamic_dimensions),
+          std::string(tensor_name) + " dimension " + std::to_string(dimension) + " is " +
+              std::to_string(shape[dimension]) + ", expected " +
+              std::to_string(expected_shape[dimension]));
     }
   }
 }
@@ -123,10 +126,11 @@ void validate_model_contracts(const Ort::Session& detector, const ModelNames& de
                            detector_label_shape, "detector labels");
   validate_tensor_metadata(pose, true, 0, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, pose_input_shape,
                            "pose input");
+  const bool dynamic_pose_dimensions = pose_variant == PoseModel::rtmw_m_wholebody133;
   validate_tensor_metadata(pose, false, 0, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT,
-                           pose_x_shape, "pose simcc_x");
+                           pose_x_shape, "pose simcc_x", dynamic_pose_dimensions);
   validate_tensor_metadata(pose, false, 1, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT,
-                           pose_y_shape, "pose simcc_y");
+                           pose_y_shape, "pose simcc_y", dynamic_pose_dimensions);
 }
 
 ModelNames input_names(const Ort::Session& session, Ort::AllocatorWithDefaultOptions& allocator) {
