@@ -43,7 +43,6 @@ constexpr int detector_width = 416;
 constexpr int detector_height = 416;
 constexpr int pose_width = 192;
 constexpr int pose_height = 256;
-constexpr std::size_t halpe_keypoints = 26;
 
 struct BoundingBox {
   float left{};
@@ -89,7 +88,8 @@ void validate_tensor_metadata(const Ort::Session& session, bool input, std::size
 
 void validate_model_contracts(const Ort::Session& detector, const ModelNames& detector_inputs,
                               const ModelNames& detector_outputs, const Ort::Session& pose,
-                              const ModelNames& pose_inputs, const ModelNames& pose_outputs) {
+                              const ModelNames& pose_inputs, const ModelNames& pose_outputs,
+                              PoseModel pose_variant) {
   require_contract(detector_inputs.values.size() == 1 &&
                        std::string_view(detector_inputs.values[0]) == "input",
                    "detector input name must be input");
@@ -108,7 +108,13 @@ void validate_model_contracts(const Ort::Session& detector, const ModelNames& de
   constexpr std::array<std::int64_t, 3> detector_output_shape{1, 0, 5};
   constexpr std::array<std::int64_t, 2> detector_label_shape{1, 0};
   constexpr std::array<std::int64_t, 4> pose_input_shape{0, 3, pose_height, pose_width};
-  constexpr std::array<std::int64_t, 3> dynamic_pose_output_shape{0, 0, 0};
+  const auto keypoints = static_cast<std::int64_t>(pose_model_keypoint_count(pose_variant));
+  const std::array<std::int64_t, 3> pose_x_shape{
+      0, pose_variant == PoseModel::rtmw_m_wholebody133 ? keypoints : 0,
+      pose_variant == PoseModel::rtmw_m_wholebody133 ? pose_width * 2 : 0};
+  const std::array<std::int64_t, 3> pose_y_shape{
+      0, pose_variant == PoseModel::rtmw_m_wholebody133 ? keypoints : 0,
+      pose_variant == PoseModel::rtmw_m_wholebody133 ? pose_height * 2 : 0};
   validate_tensor_metadata(detector, true, 0, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT,
                            detector_input_shape, "detector input");
   validate_tensor_metadata(detector, false, 0, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT,
@@ -118,9 +124,9 @@ void validate_model_contracts(const Ort::Session& detector, const ModelNames& de
   validate_tensor_metadata(pose, true, 0, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, pose_input_shape,
                            "pose input");
   validate_tensor_metadata(pose, false, 0, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT,
-                           dynamic_pose_output_shape, "pose simcc_x");
+                           pose_x_shape, "pose simcc_x");
   validate_tensor_metadata(pose, false, 1, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT,
-                           dynamic_pose_output_shape, "pose simcc_y");
+                           pose_y_shape, "pose simcc_y");
 }
 
 ModelNames input_names(const Ort::Session& session, Ort::AllocatorWithDefaultOptions& allocator) {
@@ -325,7 +331,7 @@ struct RtmposeEstimator::Impl {
         detector_outputs(output_names(detector, allocator)),
         pose_inputs(input_names(pose, allocator)), pose_outputs(output_names(pose, allocator)) {
     validate_model_contracts(detector, detector_inputs, detector_outputs, pose, pose_inputs,
-                             pose_outputs);
+                             pose_outputs, config.pose_variant);
     if (config.provider == ExecutionProvider::cuda_audited) {
       verify_audited_policy();
       if (!config.production_profiling_output_prefix.empty() ||
@@ -413,7 +419,7 @@ struct RtmposeEstimator::Impl {
     pose_inputs = input_names(pose, allocator);
     pose_outputs = output_names(pose, allocator);
     validate_model_contracts(detector, detector_inputs, detector_outputs, pose, pose_inputs,
-                             pose_outputs);
+                             pose_outputs, config.pose_variant);
   }
 
   std::vector<ProviderProfile> end_production_profiling() {
@@ -615,26 +621,31 @@ Result<squatris::inference::InferenceResult> RtmposeEstimator::infer(const input
     const auto y_shape = pose_outputs[1].GetTensorTypeAndShapeInfo().GetShape();
     const auto x_info = pose_outputs[0].GetTensorTypeAndShapeInfo();
     const auto y_info = pose_outputs[1].GetTensorTypeAndShapeInfo();
+    const auto keypoint_count = pose_model_keypoint_count(implementation_->config.pose_variant);
     if (x_info.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ||
         y_info.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT || x_shape.size() != 3 ||
         y_shape.size() != 3 || x_shape[0] != 1 || y_shape[0] != 1 ||
-        x_shape[1] != halpe_keypoints || y_shape[1] != halpe_keypoints ||
+        x_shape[1] != static_cast<std::int64_t>(keypoint_count) ||
+        y_shape[1] != static_cast<std::int64_t>(keypoint_count) ||
         x_shape[2] != pose_width * 2 || y_shape[2] != pose_height * 2 ||
-        x_info.GetElementCount() != halpe_keypoints * pose_width * 2 ||
-        y_info.GetElementCount() != halpe_keypoints * pose_height * 2) {
-      return Status{ErrorCode::inference_failed, "Pose output shapes do not match HALPE-26 SimCC"};
+        x_info.GetElementCount() != keypoint_count * pose_width * 2 ||
+        y_info.GetElementCount() != keypoint_count * pose_height * 2) {
+      return Status{ErrorCode::inference_failed, "Pose output shapes do not match selected SimCC model"};
     }
     const auto* simcc_x = pose_outputs[0].GetTensorData<float>();
     const auto* simcc_y = pose_outputs[1].GetTensorData<float>();
     const auto model_landmarks = decode_simcc(
-        std::span(simcc_x, halpe_keypoints * static_cast<std::size_t>(x_shape[2])),
-        std::span(simcc_y, halpe_keypoints * static_cast<std::size_t>(y_shape[2])), halpe_keypoints,
+        std::span(simcc_x, keypoint_count * static_cast<std::size_t>(x_shape[2])),
+        std::span(simcc_y, keypoint_count * static_cast<std::size_t>(y_shape[2])), keypoint_count,
         static_cast<std::size_t>(x_shape[2]), static_cast<std::size_t>(y_shape[2]),
         {center.x, center.y, scale.width, scale.height});
     if (!model_landmarks) {
       return model_landmarks.error();
     }
-    const auto mapped = pose::map_landmarks(pose::LandmarkLayout::halpe26, model_landmarks.value(),
+    const auto layout = implementation_->config.pose_variant == PoseModel::rtmw_m_wholebody133
+                            ? pose::LandmarkLayout::coco_wholebody133
+                            : pose::LandmarkLayout::halpe26;
+    const auto mapped = pose::map_landmarks(layout, model_landmarks.value(),
                                             {frame.width, frame.height});
     if (!mapped) {
       return mapped.error();
@@ -689,7 +700,13 @@ Result<squatris::inference::InferenceResult> RtmposeEstimator::infer(const input
 #endif
 }
 
-std::string RtmposeEstimator::backend_name() const { return "rtmpose-m-halpe26-256x192"; }
+std::string RtmposeEstimator::backend_name() const {
+#if SQUATRIS_HAS_ONNXRUNTIME
+  return std::string(pose_model_name(implementation_->config.pose_variant));
+#else
+  return std::string(pose_model_name(PoseModel::rtmpose_m_halpe26));
+#endif
+}
 
 std::string RtmposeEstimator::execution_provider() const {
 #if SQUATRIS_HAS_ONNXRUNTIME

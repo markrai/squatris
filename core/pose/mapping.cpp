@@ -36,6 +36,17 @@ constexpr std::array halpe26{Mapping{0, LandmarkId::nose},
                              Mapping{20, LandmarkId::left_foot_index},
                              Mapping{21, LandmarkId::right_foot_index}};
 
+constexpr std::array coco_wholebody133{
+    Mapping{0, LandmarkId::nose},            Mapping{5, LandmarkId::left_shoulder},
+    Mapping{6, LandmarkId::right_shoulder},  Mapping{7, LandmarkId::left_elbow},
+    Mapping{8, LandmarkId::right_elbow},      Mapping{9, LandmarkId::left_wrist},
+    Mapping{10, LandmarkId::right_wrist},    Mapping{11, LandmarkId::left_hip},
+    Mapping{12, LandmarkId::right_hip},      Mapping{13, LandmarkId::left_knee},
+    Mapping{14, LandmarkId::right_knee},     Mapping{15, LandmarkId::left_ankle},
+    Mapping{16, LandmarkId::right_ankle},    Mapping{19, LandmarkId::left_heel},
+    Mapping{22, LandmarkId::right_heel},     Mapping{17, LandmarkId::left_foot_index},
+    Mapping{20, LandmarkId::right_foot_index}};
+
 template <std::size_t Size>
 Result<std::array<Landmark, landmark_count>> apply_mapping(const std::array<Mapping, Size>& mapping,
                                                            std::span<const ModelLandmark> source,
@@ -63,7 +74,13 @@ map_landmarks(LandmarkLayout layout, std::span<const ModelLandmark> source, Imag
   if (layout == LandmarkLayout::coco17) {
     return apply_mapping(coco17, source, image_size);
   }
-  return apply_mapping(halpe26, source, image_size);
+  if (layout == LandmarkLayout::halpe26) {
+    return apply_mapping(halpe26, source, image_size);
+  }
+  if (layout == LandmarkLayout::coco_wholebody133 && source.size() == 133) {
+    return apply_mapping(coco_wholebody133, source, image_size);
+  }
+  return Status{ErrorCode::invalid_data, "Model landmark count does not match its layout"};
 }
 
 }

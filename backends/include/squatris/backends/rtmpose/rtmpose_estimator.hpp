@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <nlohmann/json_fwd.hpp>
@@ -14,6 +15,17 @@
 namespace squatris::backends::rtmpose {
 
 enum class ExecutionProvider { cpu, cuda_strict, cuda_audited };
+
+enum class PoseModel { rtmpose_m_halpe26, rtmw_m_wholebody133 };
+
+[[nodiscard]] constexpr std::string_view pose_model_name(PoseModel model) noexcept {
+  return model == PoseModel::rtmw_m_wholebody133 ? "rtmw-m-coco133-256x192"
+                                                : "rtmpose-m-halpe26-256x192";
+}
+
+[[nodiscard]] constexpr std::size_t pose_model_keypoint_count(PoseModel model) noexcept {
+  return model == PoseModel::rtmw_m_wholebody133 ? 133U : 26U;
+}
 
 struct ModelExecutionTimings {
   std::chrono::microseconds detector_inference{};
@@ -33,6 +45,7 @@ struct RtmposeConfig {
   std::filesystem::path provider_policy_manifest;
   bool verbose_provider_diagnostics{};
   bool recreate_audited_sessions_for_experiment{};
+  PoseModel pose_variant{PoseModel::rtmpose_m_halpe26};
 };
 
 class RtmposeEstimator final : public squatris::inference::IPoseEstimator {

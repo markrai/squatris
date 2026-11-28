@@ -105,6 +105,38 @@ TEST(PoseMapping, MapsPinnedHalpeFeetAndHeels) {
   EXPECT_FLOAT_EQ(x_for(LandmarkId::right_heel), 250.0F / 300.0F);
 }
 
+TEST(PoseMapping, MapsWholebodyFeetAndAnatomicalSides) {
+  std::array<ModelLandmark, 133> source{};
+  for (std::size_t index = 0; index < source.size(); ++index) {
+    source[index] = {static_cast<float>(index), 50.0F, 0.9F};
+  }
+  const auto mapped = squatris::pose::map_landmarks(
+      squatris::pose::LandmarkLayout::coco_wholebody133, source, {200, 100});
+  ASSERT_TRUE(mapped);
+  const auto x_for = [&mapped](LandmarkId id) {
+    return mapped.value()[static_cast<std::size_t>(id)]
+        .image.value_or(squatris::pose::NormalizedImagePoint{})
+        .x;
+  };
+  EXPECT_FLOAT_EQ(x_for(LandmarkId::left_wrist), 9.0F / 200.0F);
+  EXPECT_FLOAT_EQ(x_for(LandmarkId::right_wrist), 10.0F / 200.0F);
+  EXPECT_FLOAT_EQ(x_for(LandmarkId::left_knee), 13.0F / 200.0F);
+  EXPECT_FLOAT_EQ(x_for(LandmarkId::right_knee), 14.0F / 200.0F);
+  EXPECT_FLOAT_EQ(x_for(LandmarkId::left_foot_index), 17.0F / 200.0F);
+  EXPECT_FLOAT_EQ(x_for(LandmarkId::right_foot_index), 20.0F / 200.0F);
+  EXPECT_FLOAT_EQ(x_for(LandmarkId::left_heel), 19.0F / 200.0F);
+  EXPECT_FLOAT_EQ(x_for(LandmarkId::right_heel), 22.0F / 200.0F);
+}
+
+TEST(PoseMapping, RejectsWrongWholebodyCardinality) {
+  const std::array<ModelLandmark, 132> short_source{};
+  const std::array<ModelLandmark, 134> long_source{};
+  EXPECT_FALSE(squatris::pose::map_landmarks(
+      squatris::pose::LandmarkLayout::coco_wholebody133, short_source, {200, 100}));
+  EXPECT_FALSE(squatris::pose::map_landmarks(
+      squatris::pose::LandmarkLayout::coco_wholebody133, long_source, {200, 100}));
+}
+
 TEST(PoseValidation, RejectsTimestampInversion) {
   squatris::pose::PoseFrame pose;
   pose.image_size = {640, 480};

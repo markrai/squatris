@@ -6,7 +6,7 @@
 
 namespace squatris::pose {
 
-enum class LandmarkLayout { coco17, halpe26 };
+enum class LandmarkLayout { coco17, halpe26, coco_wholebody133 };
 
 struct ModelLandmark {
   float pixel_x{};

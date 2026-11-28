@@ -51,6 +51,13 @@ set_tests_properties(squatris-benchmark-rejects-nonfinite-source-rate PROPERTIES
   LABELS "integration;hardware-independent"
   WILL_FAIL TRUE
 )
+add_test(NAME squatris-benchmark-rejects-unconfigured-rtmw
+  COMMAND squatris-pose-benchmark --backend rtmw --provider cpu
+)
+set_tests_properties(squatris-benchmark-rejects-unconfigured-rtmw PROPERTIES
+  LABELS "integration;hardware-independent"
+  WILL_FAIL TRUE
+)
 add_test(NAME squatris-benchmark-rejects-unknown-provider
   COMMAND squatris-pose-benchmark --mode deterministic --backend mock --provider unknown
 )
