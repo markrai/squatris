@@ -15,7 +15,9 @@ jobs:
           vcpkgGitCommitId: 9fa95bf687fa6ae7f2da0673a8067e5fc1515c27
       - name: Release build and tests
         shell: pwsh
-        run: ./scripts/ci.ps1 -Job build-test
+        run: |
+          if (-not $env:VCPKG_ROOT) { throw 'Hosted vcpkg checkout was not configured' }
+          ./scripts/ci.ps1 -Job build-test -VcpkgRoot "$env:VCPKG_ROOT"
 
   clang-tidy:
     runs-on: windows-2025
@@ -26,7 +28,9 @@ jobs:
           vcpkgGitCommitId: 9fa95bf687fa6ae7f2da0673a8067e5fc1515c27
       - name: Clang-Tidy build
         shell: pwsh
-        run: ./scripts/ci.ps1 -Job clang-tidy
+        run: |
+          if (-not $env:VCPKG_ROOT) { throw 'Hosted vcpkg checkout was not configured' }
+          ./scripts/ci.ps1 -Job clang-tidy -VcpkgRoot "$env:VCPKG_ROOT"
 
   onnx-cpu-build-test:
     runs-on: windows-2025
@@ -37,4 +41,6 @@ jobs:
           vcpkgGitCommitId: 9fa95bf687fa6ae7f2da0673a8067e5fc1515c27
       - name: ONNX Runtime CPU build and tests
         shell: pwsh
-        run: ./scripts/ci.ps1 -Job onnx-cpu-build-test
+        run: |
+          if (-not $env:VCPKG_ROOT) { throw 'Hosted vcpkg checkout was not configured' }
+          ./scripts/ci.ps1 -Job onnx-cpu-build-test -VcpkgRoot "$env:VCPKG_ROOT"
