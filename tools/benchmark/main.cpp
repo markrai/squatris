@@ -257,13 +257,22 @@ std::optional<Options> parse(int argc, char** argv) {
     std::cerr << "Iterations, dimensions, time limits, and failure bounds must be nonzero\n";
     return std::nullopt;
   }
-  if (options.backend != "mock" && options.backend != "rtmpose") {
-    std::cerr << "Backend must be mock or rtmpose\n";
+  if (options.backend != "mock" && options.backend != "rtmpose" && options.backend != "rtmw") {
+    std::cerr << "Backend must be mock, rtmpose, or rtmw\n";
     return std::nullopt;
   }
   if (options.provider != "cpu" && options.provider != "cuda" &&
       options.provider != "cuda-strict" && options.provider != "cuda-audited") {
     std::cerr << "Provider must be cpu, cuda-strict, or cuda-audited\n";
+    return std::nullopt;
+  }
+  if (options.backend == "rtmw" &&
+      (options.pose == std::filesystem::path("models/pose.onnx") ||
+       options.manifest == std::filesystem::path("models/manifest.json") ||
+       (options.provider == "cuda-audited" &&
+        options.policy_manifest == std::filesystem::path("config/rtmpose-cuda-policy.json")))) {
+    std::cerr << "RTMW requires explicit candidate pose and manifest paths, and a separate "
+                 "reviewed policy for cuda-audited\n";
     return std::nullopt;
   }
   if (options.duration_seconds > 3600 ||
@@ -324,6 +333,9 @@ make_estimator(const Options& options) {
   squatris::backends::rtmpose::RtmposeConfig config;
   config.detector_model = options.detector;
   config.pose_model = options.pose;
+  if (options.backend == "rtmw") {
+    config.pose_variant = squatris::backends::rtmpose::PoseModel::rtmw_m_wholebody133;
+  }
   config.provider = options.provider == "cpu" ? squatris::backends::rtmpose::ExecutionProvider::cpu
                     : options.provider == "cuda-audited"
                         ? squatris::backends::rtmpose::ExecutionProvider::cuda_audited
@@ -846,7 +858,7 @@ production_profiling_evidence(squatris::inference::IPoseEstimator& estimator,
 
 
 squatris::Result<nlohmann::json> verified_model_identity(const Options& options) {
-  if (options.backend != "rtmpose") {
+  if (options.backend == "mock") {
     return nlohmann::json{{"backend", "mock-pose-v1"},
                           {"execution_policy", "cpu"},
                           {"execution_provider", "deterministic-cpu"},
@@ -869,13 +881,24 @@ squatris::Result<nlohmann::json> verified_model_identity(const Options& options)
   }
   std::optional<std::string> expected_detector;
   std::optional<std::string> expected_pose;
+  const auto variant = options.backend == "rtmw"
+                           ? squatris::backends::rtmpose::PoseModel::rtmw_m_wholebody133
+                           : squatris::backends::rtmpose::PoseModel::rtmpose_m_halpe26;
+  const auto model_name = squatris::backends::rtmpose::pose_model_name(variant);
   for (const auto& artifact : manifest.value()["artifacts"]) {
     if (!artifact.contains("role") || !artifact.contains("onnx_sha256")) {
       continue;
     }
     if (artifact["role"] == "person_detector") {
+      if (expected_detector.has_value()) {
+        return Status{ErrorCode::invalid_data, "Duplicate detector artifact"};
+      }
       expected_detector = artifact["onnx_sha256"].get<std::string>();
     } else if (artifact["role"] == "pose_estimator") {
+      if (expected_pose.has_value() || !artifact.contains("id") ||
+          artifact["id"] != model_name) {
+        return Status{ErrorCode::invalid_data, "Unexpected or duplicate pose model identity"};
+      }
       expected_pose = artifact["onnx_sha256"].get<std::string>();
     }
   }
@@ -896,13 +919,19 @@ squatris::Result<nlohmann::json> verified_model_identity(const Options& options)
     std::ranges::transform(second, second.begin(), lower);
     return first == second;
   };
+  if (variant == squatris::backends::rtmpose::PoseModel::rtmw_m_wholebody133 &&
+      (detector_hash.value() != "ceb11c07298f95c50d7c5abeb906d03340c85f23aa79e3e66966e7fb6c307250" ||
+       pose_hash.value() == "26f3a19e61304a600dfb82d1001d41d24343b89fc70a33ffc84657e0b0bf2ecf")) {
+    return Status{ErrorCode::invalid_data, "RTMW comparison requires the pinned reference "
+                                          "detector and distinct candidate pose weights"};
+  }
   if (!equal_hash(detector_hash.value(), *expected_detector) ||
       !equal_hash(pose_hash.value(), *expected_pose)) {
     return Status{ErrorCode::invalid_data,
                   "Model checksum does not match the authoritative manifest"};
   }
   return nlohmann::json{
-      {"backend", "rtmpose-m-halpe26-256x192"},
+      {"backend", model_name},
       {"execution_policy", options.provider == "cuda" ? "cuda-strict" : options.provider},
       {"execution_provider", options.provider == "cpu" ? "CPUExecutionProvider"
                              : options.provider == "cuda-audited"
@@ -927,7 +956,7 @@ int run_benchmark(int argc, char** argv) {
   const auto options = parse(argc, argv);
   if (!options) {
     std::cerr << "Usage: SquatrisPoseBenchmark [--mode deterministic|realtime] [--video PATH] "
-                 "[--backend mock|rtmpose] [--provider cpu|cuda-strict|cuda-audited] [--warmup N] "
+                 "[--backend mock|rtmpose|rtmw] [--provider cpu|cuda-strict|cuda-audited] [--warmup N] "
                  "[--policy-manifest PATH] [--iterations N] [--duration-seconds N] "
                   "[--loop-video true|false] [--simulated-source-fps FPS] "
                   "[--profile-production true|false] "
@@ -1100,7 +1129,7 @@ int run_benchmark(int argc, char** argv) {
   report["results"] = {{"frames_skipped", skipped}, {"source_frames_delivered", sequence}};
   report["results"]["measured_steady_state_seconds"] = report["measured"]["elapsed_seconds"];
 
-  if (options->backend == "rtmpose" && options->provider != "cpu") {
+  if (options->backend != "mock" && options->provider != "cpu") {
     auto* rtmpose =
         dynamic_cast<squatris::backends::rtmpose::RtmposeEstimator*>(estimator.value().get());
     const auto evidence = options->provider == "cuda-audited" && rtmpose != nullptr
